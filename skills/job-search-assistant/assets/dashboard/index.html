@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>求职工作台 · Job Search</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="#"><span class="brand-mark">J</span><span>求职工作台<small>JOB SEARCH ASSISTANT</small></span></a>
+  <div class="nav-label">工作空间</div>
+  <nav aria-label="主导航">
+    <button class="nav active" data-page="overview"><span>◫</span>运行概览</button>
+    <button class="nav" data-page="records"><span>▤</span>投递记录</button>
+    <button class="nav" data-page="attention"><span>◷</span>待人工处理 <b id="nav-count">0</b></button>
+    <button class="nav" data-page="setup"><span>＋</span>新建任务</button>
+  </nav>
+  <div class="sidebar-bottom"><span class="local-dot"></span>仅在这台电脑上运行<p>资料与截图保存在本地。<br>面板不启动后台投递。</p><small>v0.2 · 本地可视化面板</small></div>
+</aside>
+<main>
+  <header><div><div class="eyebrow">YOUR NEXT CHAPTER</div><h1 id="page-title">运行概览</h1><p class="muted" id="page-description">让每一次投递有记录，让每一步操作看得见。</p></div><div class="header-actions"><span id="connection" class="badge">正在连接</span><button id="export" class="secondary">↓ 导出 Excel</button></div></header>
+  <div id="error" class="error" role="alert" hidden></div>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <div class="runbar"><label for="run-select">当前轮次</label><select id="run-select" aria-label="选择运行轮次"><option value="">尚无任务</option></select><span id="run-status" class="badge">未启动</span><div class="controls"><button data-control="paused" class="secondary">Ⅱ 暂停</button><button data-control="running" class="primary">继续</button><button data-control="watching" class="secondary">仅值守</button><button data-control="stopped" class="danger">停止</button></div></div>
+
+  <section id="overview" class="page">
+    <div class="stats"><article><span>本轮申请</span><strong id="stat-total">0</strong><small>已登记的公司与岗位</small></article><article><span>已确认成功</span><strong id="stat-success" class="teal">0</strong><small>有回执或聊天记录佐证</small></article><article><span>待核实 / 失败</span><strong id="stat-issues">0</strong><small>查看记录后再决定下一步</small></article><article><span>待人工处理</span><strong id="stat-attention" class="amber">0</strong><small>所有轮次 · 面试优先处理</small></article></div>
+    <div class="workspace-grid">
+      <article class="card preview-card"><div class="card-heading"><h2>最近操作画面</h2><span class="pill">所有轮次 · 截图非直播</span></div><div id="frame-empty" class="empty frame-empty"><span class="empty-symbol">▧</span><h3>等待第一张操作截图</h3><p>执行器观察浏览器后，最近的画面会出现在这里。</p></div><img id="frame" alt="最近一次浏览器操作截图" hidden><div class="frame-caption"><span id="frame-title">尚未收到截图</span><time id="frame-time">—</time></div></article>
+      <div class="side-stack"><article class="card"><div class="card-heading"><h2>执行状态</h2><span class="status-dot"></span></div><h3 id="executor-title">等待 Codex 会话</h3><p id="executor-description" class="muted">打开面板不会自动开始投递。</p><div id="current-task" class="current-task">暂无正在处理的岗位</div><p class="hint">这里只显示最近一次工具活动，不能证明 AI 仍在线。暂停后可接管电脑；继续前请回到招聘页面。</p><div id="command-state" class="command-state"></div></article><article class="card"><div class="card-heading"><h2>本轮配置</h2><button id="view-config" class="text-button">查看全部 ↗</button></div><dl id="config-summary" class="summary"><dt>目标岗位</dt><dd>尚未配置</dd></dl></article></div>
+    </div>
+    <article class="card recent"><div class="card-heading"><h2>最近行动</h2><span class="muted">真实台账 · 自动刷新</span></div><div id="activity-list" class="activity-list"></div></article>
+  </section>
+
+  <section id="records" class="page" hidden><article class="card"><div class="card-heading"><h2>投递记录</h2><div class="filters"><input id="search" type="search" placeholder="搜索公司或岗位" aria-label="搜索公司或岗位"><select id="record-filter" aria-label="按结果筛选"><option value="">全部状态</option><option value="in_progress">处理中</option><option value="success">成功</option><option value="uncertain">待核实</option><option value="failed">失败</option><option value="needs_user">需人工</option></select></div></div><div class="table-scroll"><table><thead><tr><th>公司 / 岗位</th><th>渠道</th><th>状态</th><th>最近更新</th><th>记录</th></tr></thead><tbody id="record-rows"></tbody></table></div><p id="records-empty" class="empty">本轮还没有投递记录。</p></article></section>
+
+  <section id="attention" class="page" hidden><div class="section-note">面试邀约由你决定。处理意见只保存到本地；请在 BOSS 完成人工沟通后，再明确恢复该会话。</div><div id="attention-list" class="attention-list"></div></section>
+
+  <section id="setup" class="page" hidden><div class="setup-grid"><article class="card"><div class="card-heading"><h2>准备本轮任务</h2><label class="secondary file-label">导入配置 JSON<input id="import-config" type="file" accept=".json,application/json" hidden></label></div><form id="setup-form">
+    <fieldset><legend>投递渠道</legend><label class="check"><input id="channel-web" type="checkbox">公司官网网申</label><label class="check"><input id="channel-boss" type="checkbox" checked>BOSS 直聘</label></fieldset>
+    <label>目标岗位<input id="target-roles" required placeholder="例如：嵌入式软件工程师，固件工程师"></label>
+    <label>现成简历路径<input id="resume-path" required placeholder="C:/求职/简历.pdf"></label>
+    <label>已确认的个人资料 JSON 路径<input id="profile-path" required placeholder="C:/求职/个人资料.json"></label>
+    <label>公司表格路径（官网网申时必填）<input id="company-table" placeholder="C:/求职/公司.xlsx"></label>
+    <div class="form-grid"><label>BOSS 投递模式<select id="boss-mode"><option value="filtered">按平台筛选结果连续沟通</option><option value="screened">AI 阅读岗位后精筛</option></select></label><label>本轮沟通上限<input id="max-contacts" type="number" min="1" max="10000" value="20" required></label><label>非常见问题<select id="unknown-mode"><option value="human">转交给我</option><option value="ai">AI 根据资料组织回复</option></select></label><label>消息检查间隔（秒）<input id="poll-seconds" type="number" min="15" value="60" required></label></div>
+    <details><summary>筛选偏好与预设话术（JSON）</summary><p class="hint">支持 preferences、rules、列映射及公司范围。保持预设原文；面试不走自动回复。</p><textarea id="extra-config" rows="8" spellcheck="false">{"preferences": {}, "rules": []}</textarea></details>
+    <button type="submit" class="primary wide">复核本轮配置 →</button>
+  </form></article><article class="card setup-help"><div class="eyebrow">BEFORE YOU START</div><h2>准备好，再出发。</h2><ol><li><strong>沿用你已有的资料</strong><p>如果资料还不是 JSON，请先让 Codex 整理字段映射并与你核对。</p></li><li><strong>确认本轮范围</strong><p>下一步会展示材料指纹、公司范围、筛选条件及回复规则。</p></li><li><strong>交给当前会话执行</strong><p>确认后生成轮次编号。将编号交给 Codex 继续；面板本身不会操作招聘网站。</p></li></ol><div class="section-note">开场白沿用 BOSS 预设。面试邀约始终转人工。</div></article></div></section>
+  <footer><span id="data-root">本地数据目录</span><span id="updated">等待同步</span></footer>
+</main>
+<dialog id="detail-dialog"><div class="dialog-header"><h2 id="detail-title">查看记录</h2><button class="secondary close-dialog" aria-label="关闭">×</button></div><div id="detail-content"></div></dialog>
+<dialog id="config-dialog"><div class="dialog-header"><h2 id="config-title">本轮配置</h2><button class="secondary close-dialog" aria-label="关闭">×</button></div><pre id="config-json"></pre><div id="approval-area" hidden><label class="check"><input id="approve-config" type="checkbox">我已核对资料、投递范围与回复规则，确认授权本轮操作。</label><button id="start-run" class="primary wide" disabled>确认本轮授权，等待 Codex 执行</button></div></dialog>
+</body></html>

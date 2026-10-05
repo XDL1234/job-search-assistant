@@ -1,0 +1,10 @@
+{
+  "name": "虚构示例用户",
+  "contact": {"phone": "", "email": ""},
+  "education": [],
+  "experience": [],
+  "projects": [],
+  "skills": [],
+  "availability": {"text": ""},
+  "sources": {"name": "用户提供的个人信息文件；使用前替换为真实出处"}
+}

@@ -1,0 +1,17 @@
+{
+  "channels": ["web", "boss"],
+  "company_table": "C:/求职/公司.csv",
+  "profile_path": "C:/求职/个人信息.json",
+  "resume_path": "C:/求职/简历.pdf",
+  "target_roles": ["嵌入式软件工程师"],
+  "boss_mode": "screened",
+  "max_contacts": 20,
+  "unknown_reply_mode": "ai",
+  "poll_seconds": 60,
+  "preferences": {"cities": ["深圳"], "exclude_outsourcing": true},
+  "rules": [
+    {"id": "salary-example", "enabled": false, "category": "salary", "when": {"salary_monthly_gross": {"gte": 15000}, "salary_basis": {"eq": "税前月薪"}}, "reply": "这个薪资范围可以接受，谢谢。"},
+    {"id": "location-example", "enabled": false, "category": "location", "when": {"city": {"eq": "深圳"}}, "reply": "深圳的工作地点可以接受。"},
+    {"id": "availability-example", "enabled": false, "category": "availability", "when": {}, "reply": "确认录用安排后，两周内可以到岗。"}
+  ]
+}

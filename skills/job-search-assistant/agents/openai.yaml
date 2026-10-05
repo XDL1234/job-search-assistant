@@ -1,0 +1,6 @@
+interface:
+  display_name: "求职自动化助手"
+  short_description: "按公司表格网申并截图留档，支持 BOSS 筛选沟通、规则回复和面试人工接管"
+  default_prompt: "使用 $job-search-assistant 检查并安装所需依赖，读取我的公司表格、个人资料和简历，确认本轮范围后执行求职任务。"
+policy:
+  allow_implicit_invocation: true

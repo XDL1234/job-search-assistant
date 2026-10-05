@@ -1,0 +1,6 @@
+{
+  "name": "job-search-assistant",
+  "version": "0.2.0",
+  "description": "Windows 求职自动化：公司表格网申、截图留档、BOSS 沟通与规则回复，首次使用自动初始化本地依赖。",
+  "skills": "./skills/"
+}
