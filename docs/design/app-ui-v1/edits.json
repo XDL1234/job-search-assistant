@@ -1,0 +1,10 @@
+[
+  {
+    "slug": "03-companies",
+    "prompt": "Edit this Chinese desktop app UI mockup with very targeted corrections only. Preserve the entire layout, styling, dimensions, company table, sidebar, title and all other text. In the right settings column replace the heading 执行选项 with 固定执行规则. Under it replace ALL three checkboxes with NON-INTERACTIVE small lock/info icons and static explanatory rows: 填写内容逐页截图 · 始终开启 ; 成功与失败均记录 · 始终开启 ; 缺失信息时暂停并提醒我补充. There must be NO empty checkbox suggesting missing data can be invented and NO option to disable evidence. Wrap lines cleanly if needed. Change bottom-left footer 共5家 to 共12家 so it agrees with 已识别12家公司, retain 已选择3家公司. Make no other changes. Crisp readable simplified Chinese."
+  },
+  {
+    "slug": "08-history",
+    "prompt": "Edit this desktop application mockup with only these consistency corrections, preserving all other layout, typography, tables and screenshot thumbnails. Last table row 启明软件 currently has channel 官网 and outcome 已沟通; change its outcome to 已投递, keeping 官网. Fifth row 海辰微电子 channel BOSS currently has outcome 已投递; change its outcome to 已沟通. In the bottom-left avatar area use only 我的账户 and remove the example personal name 林一凡. Keep evidence drawer intact. Do not redesign. Render crisp Chinese. These are fictional UI design data, not actual actions."
+  }
+]

@@ -2,6 +2,17 @@
 
 一个可分发的 Codex Skill / 插件源码包，供 Windows 浏览器网申、BOSS 直聘沟通和回复辅助使用。简历与个人资料由用户提供；按轮次授权后操作，面试邀约始终转人工。
 
+## 项目状态与文档
+
+当前实现为 **v0.2 Skill 与本机浏览器面板**。独立 Windows 桌面应用已确定第一版八页界面与产品方案，并完成 Codex 接入探针验证；桌面应用代码和安装包尚未实现。
+
+- [文档索引与维护约定](https://github.com/XDL1234/job-search-assistant/blob/main/docs/README.md)
+- [八页界面稿与设计说明](https://github.com/XDL1234/job-search-assistant/blob/main/docs/design/app-ui-v1/README.md)
+- [桌面应用实施计划](https://github.com/XDL1234/job-search-assistant/blob/main/docs/superpowers/plans/2026-10-06-desktop-app-v1.md)
+- [变更记录](https://github.com/XDL1234/job-search-assistant/blob/main/CHANGELOG.md)
+
+桌面应用计划采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。应用内 Codex 执行、人工确认发送、PDF/Word 资料解析属于下一阶段功能，不能视为当前 v0.2 已支持。
+
 ## 安装与使用
 
 需要 Windows、Python 3.11+、能运行本地命令并查看图片的 Codex 会话。解压后在 PowerShell 执行：
@@ -50,7 +61,7 @@ python -X utf8 "./skills/job-search-assistant/scripts/run.py" bootstrap --instal
 - 电脑操作由当前 Codex 模型观察截图后调用本地脚本；不是无需模型的固定坐标机器人，也没有独立后台模型服务。
 - 仅会话持续运行时值守。电脑锁屏、窗口切换或会话结束会停止/暂停操作。真实网站布局、账号权限和平台限制需要实际接入核实。
 
-个人记录默认在用户主目录下 `.job-search-assistant`，不会进入分发包。该位置避开 Windows MSIX 对 AppData 的重定向。截图含个人信息，仅在本地保存；不要把运行目录分享给其他用户。
+个人记录默认在用户主目录下 `.job-search-assistant`，不会进入分发包。该位置避开 Windows MSIX 对 AppData 的重定向。截图文件保存在本地；Codex 分析时会将所需资料或截图发送到模型服务，本地存储不代表离线推理。不要把运行目录分享给其他用户。
 
 ## 开发验证
 
