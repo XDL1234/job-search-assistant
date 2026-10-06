@@ -22,6 +22,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn('job-search-assistant/install.ps1', files)
                 self.assertIn('job-search-assistant/skills/job-search-assistant/assets/dashboard/app.js', files)
                 self.assertIn('job-search-assistant/open-dashboard.ps1', files)
+                self.assertIn('job-search-assistant/skills/job-search-assistant/assets/simulation.html', files)
                 self.assertFalse(any('.verification' in name or name.endswith('.sqlite3') or '__pycache__' in name for name in files))
             self.assertTrue(Path(output['checksum']).is_file())
 

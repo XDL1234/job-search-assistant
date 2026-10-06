@@ -20,7 +20,7 @@
 - 普通用户无需手动安装 Python 或寻找额外 computer-use Skill。
 - 不自动改写简历，不修改原公司表，个人数据不进入源码或发布包。
 - 保留已有 Skill/CLI 入口；不复制领域逻辑，不实现云同步和多用户。
-- 文档任务与开发任务分开验收；本计划尚未开始产品实现。
+- 文档任务与开发任务分开验收；任务 1–3 已开始实现，当前验收与阻断见 [开发说明](../../desktop-development.md)。
 - 不自动执行 git 分支、提交或推送；开发环境的全局安装单独说明影响。
 
 ## 重点验证
@@ -65,11 +65,11 @@
 
 **输入/输出：** `handle_app_request` 先支持 `health`、`snapshot`、`export_records`，通过既有 `Dashboard.snapshot`、`Store.export` 读取临时台账；不启动真实任务。
 
-- [ ] 检测 Rust/MSVC/WebView2 和构建工具，列出缺项；依赖锁定到本次实际验证版本，不使用未锁定 latest 作为发布依据。
-- [ ] 在 `tests/test_app_service.py` 写 `test_unknown_method_rejected` 与 `test_snapshot_is_read_only`：未知方法拒绝；读状态前后无新增轮次、授权或动作。
-- [ ] 运行 `python -m unittest discover -s tests -p test_app_service.py -v`，确认缺少实现导致失败，再实现白名单入口与响应包。
-- [ ] 创建 Tauri 框架与统一视觉变量，八页先有导航；首页和记录页接入真实临时台账，无数据时显示空态。
-- [ ] 运行上述 Python 测试、前端 `npm run typecheck`、`npm run build`、原生 `cargo test`；成功打开 Windows 窗口并读取快照。
+- [x] 检测 Rust/MSVC/WebView2 和构建工具，列出缺项；依赖锁定到本次实际验证版本，不使用未锁定 latest 作为发布依据。
+- [x] 在 `tests/test_app_service.py` 写 `test_unknown_method_rejected` 与 `test_snapshot_is_read_only`：未知方法拒绝；读状态前后无新增轮次、授权或动作。
+- [x] 运行 `python -m unittest discover -s tests -p test_app_service.py -v`，确认缺少实现导致失败，再实现白名单入口与响应包。
+- [x] 创建 Tauri 框架与统一视觉变量，八页先有导航；首页和记录页接入真实临时台账，无数据时显示空态。
+- [x] 运行上述 Python 测试、前端 `npm run typecheck`、`npm run build`、原生 `cargo test`；成功打开 Windows 窗口并读取快照。
 
 **验收：** 应用能打开，布局与已确认稿一致，显示真实数据或空态，关闭不留下本应用工作进程。
 
@@ -79,11 +79,11 @@
 
 **输入/输出：** 实现 `CodexClient.request` 与通知流；`account/read` 得到就绪状态；登录操作使用服务端返回的登录流程。只持久化必要的会话标识，不复制凭据。
 
-- [ ] 协议测试覆盖拆行/多行读取、响应与通知交错、错误响应、EOF、请求超时；`turn/start` 刚返回时取消要保留取消意图，不能恢复执行状态。
-- [ ] 运行 `cargo test --test codex_protocol` 观察预期失败后，实现 stdio 进程、请求 ID 匹配、事件分发和退出处理。
+- [x] 协议测试覆盖拆行/多行读取、响应与通知交错、错误响应、EOF、请求超时；`turn/start` 刚返回时取消要保留取消意图，不能恢复执行状态。
+- [x] 运行 `cargo test --test codex_protocol` 观察预期失败后，实现 stdio 进程、请求 ID 匹配、事件分发和退出处理。
 - [ ] 连接就绪 UI 区分未安装、版本不兼容、未登录、正在登录、已连接、断线；未安装时提供明确安装步骤，不静默全局安装。
 - [ ] 使用模拟图片重跑本轮已验证的 Skill/图片问答、流式、中断、跨进程恢复。新账号登录在隔离测试环境验收，不能退出开发者当前账号来测试。
-- [ ] 运行协议测试与前端检查，保留实际 CLI 版本和失败信息。
+- [x] 运行协议测试与前端检查，保留实际 CLI 版本和失败信息。
 
 **验收：** 点击应用中的测试入口可得到流式结果；重启能恢复测试上下文；失败有明确状态，不伪装成执行中。
 
@@ -93,10 +93,10 @@
 
 **输入/输出：** `preview_run(config) -> {ticket, config}`、`start_run(ticket) -> {run_id}` 复用现有预览/授权检查；`control_run(run_id, action)` 接受 `paused/running/watching/stopped`。原生 `ExecutorCoordinator` 提供 `start_run/pause_run/resume_run/stop_run`，维护模型 ID 与轮次映射。
 
-- [ ] 为新映射表建立版本迁移：测试旧库备份、迁移失败回滚与重复启动幂等，再实现最小迁移。
+- [x] 为新映射表建立版本迁移：测试旧库备份、迁移失败回滚与重复启动幂等，再实现最小迁移。
 - [ ] 用临时台账测试“开始后立即暂停”“恢复前资料改变”“暂停前截图被复用”“发送后崩溃不重发”“两个执行器竞争”；失败后补充协调器和动作边界检查。
 - [ ] 将安装目录下 Python 执行入口与 Skill 路径传入 App Server 任务上下文，在模拟页面真实调用 `capture/act` 并实际读取图片。核验 sandbox 和桌面权限；通路失败时保持未就绪状态，先解决此里程碑再扩展页面。
-- [ ] 沿用已有 `prepare/claim/finish`、窗口绑定和全局桌面锁；协调器暂停先更新 SQLite，再取消模型。控制入口不排在模型长任务后面。
+- [x] 沿用已有 `prepare/claim/finish`、窗口绑定和全局桌面锁；协调器暂停先更新 SQLite，再取消模型。控制入口不排在模型长任务后面。
 - [ ] 实现运行页队列、最近画面时间、步骤、暂停/接管/恢复/停止。停止与断线保存检查点；关闭先暂停，程序重启等待用户恢复。
 - [ ] 测试模拟网申成功与失败、混合面试消息转人工、截图/字段对应、结果导出；运行 `python -m unittest discover -s tests -p test_app_execution.py -v` 与 `python tests/desktop_app_smoke.py`。
 
@@ -174,4 +174,4 @@
 - [x] 梳理已有代码复用边界，并保存设计与实施清单。
 - [ ] 从任务 1 开始实现应用，再完成任务 2、3 的最小闭环。
 
-应用代码、构建依赖安装和 Git 提交均不属于本轮已完成内容。
+后续开发更新：任务 1 的原生开发框架已验证，构建工具已按用户授权安装到 D 盘指定目录；任务 2、3 实现正在验收。完整 AI 模拟受账号额度与连接故障阻断，不能勾选闭环完成。当前为源码开发预览，未发布安装包；实际结果见 [开发说明](../../desktop-development.md)。

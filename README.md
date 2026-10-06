@@ -4,14 +4,15 @@
 
 ## 项目状态与文档
 
-当前实现为 **v0.2 Skill 与本机浏览器面板**。独立 Windows 桌面应用已确定第一版八页界面与产品方案，并完成 Codex 接入探针验证；桌面应用代码和安装包尚未实现。
+稳定实现为 **v0.2 Skill 与本机浏览器面板**。独立 Windows 桌面应用已进入 **v0.3 开发预览**：Tauri 原生窗口、八页导航、应用内 Codex 连接、模拟任务授权、暂停恢复、记录与截图读取已实现；完整 AI 模拟流程尚未验收通过，暂无桌面安装包。
 
 - [文档索引与维护约定](https://github.com/XDL1234/job-search-assistant/blob/main/docs/README.md)
 - [八页界面稿与设计说明](https://github.com/XDL1234/job-search-assistant/blob/main/docs/design/app-ui-v1/README.md)
 - [桌面应用实施计划](https://github.com/XDL1234/job-search-assistant/blob/main/docs/superpowers/plans/2026-10-06-desktop-app-v1.md)
+- [桌面开发预览与验证状态](docs/desktop-development.md)
 - [变更记录](https://github.com/XDL1234/job-search-assistant/blob/main/CHANGELOG.md)
 
-桌面应用计划采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。应用内 Codex 执行、人工确认发送、PDF/Word 资料解析属于下一阶段功能，不能视为当前 v0.2 已支持。
+桌面应用采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。当前只开放虚构资料的本地模拟入口；真实投递配置、人工确认发送、PDF/Word 资料解析及安装包仍在后续计划中，不能视为当前 v0.2 已支持。
 
 ## 安装与使用
 

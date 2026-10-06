@@ -208,6 +208,8 @@ def main(argv=None):
     bootstrap.add_argument('--install', action='store_true')
     request = commands.add_parser('request', help='读取 UTF-8 JSON 请求，输出 JSON 结果')
     request.add_argument('--file', type=Path, required=True)
+    app_request = commands.add_parser('app-request', help='桌面应用受限接口')
+    app_request.add_argument('--file', type=Path, required=True)
     install = commands.add_parser('install', help='将自包含 Skill 安装到用户目录，不覆盖已有不同版本')
     install.add_argument('--destination', type=Path, default=Path.home() / '.agents/skills/job-search-assistant')
     commands.add_parser('doctor', help='验证依赖、数据库及 Excel 写入，不移动鼠标')
@@ -238,6 +240,11 @@ def main(argv=None):
         else:
             store = Store(args.root)
             try:
+                if args.command == 'app-request':
+                    from .app_service import handle_app_request
+                    response = handle_app_request(store, load_json(args.file))
+                    print(json.dumps(response, ensure_ascii=False))
+                    return 0 if response['ok'] else 1
                 result = dispatch(store, load_json(args.file))
             finally:
                 store.close()

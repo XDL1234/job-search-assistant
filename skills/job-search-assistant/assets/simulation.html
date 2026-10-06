@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><title>求职助手本地验证</title>
+<style>
+*{box-sizing:border-box}body{font-family:"Microsoft YaHei",sans-serif;background:#edf2f6;color:#143046;margin:0;padding:24px}h1{font-size:22px;margin:0 0 8px}.note{color:#576575;font-size:13px;margin-bottom:20px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}section{background:white;padding:24px;border-radius:12px}h2{font-size:18px;margin-top:0}label{display:block;margin:12px 0 5px}input,textarea,select{font:inherit;padding:9px;width:100%;border:1px solid #9cacb9;border-radius:4px}textarea{height:100px}button{background:#176b82;color:white;border:0;padding:11px 16px;border-radius:5px;cursor:pointer;margin:10px 5px 0 0}button.secondary{background:#5a6b78}#result{white-space:pre-wrap;margin-top:15px;padding:10px;background:#e9f8f0;min-height:46px}.chat{height:170px;overflow:auto;background:#f4f6f9;padding:12px}.message{padding:5px 0}.warn{color:#9f4100}
+</style></head><body>
+<h1>求职助手 · 本地验证页面</h1><div class="note">完全离线，只使用虚构信息。提交与聊天均留在当前页面，不连接招聘网站。</div>
+<div class="grid"><section><h2>模拟公司网申</h2><form id="application">
+<label for="name">姓名</label><input id="name" required autocomplete="off">
+<label for="email">邮箱</label><input id="email" type="email" required autocomplete="off">
+<label for="role">岗位</label><select id="role"><option>嵌入式软件工程师</option><option>测试工程师</option></select>
+<label for="experience">项目经历</label><textarea id="experience"></textarea>
+<label for="resume">简历附件（可选，仅本地）</label><input id="resume" type="file">
+<button type="submit">提交申请</button><button class="secondary" type="button" id="fail">模拟失败</button></form><div id="result">尚未提交</div></section>
+<section><h2>模拟 BOSS 会话</h2><div class="chat" id="chat"><div class="message">招聘方：你好，请问你的到岗时间？</div></div>
+<button id="greet">立即沟通（平台话术）</button><button class="secondary" id="askResume">索要简历</button><button class="secondary" id="interview">混合面试邀约</button>
+<label for="reply">回复内容</label><textarea id="reply"></textarea><button id="send">发送回复</button><button id="attach">发送指定附件</button>
+<p class="warn">面试邀约必须转交用户；测试时也不能自动确认。</p><div id="counts">开聊 0 次，附件 0 次，回复 0 次</div></section></div>
+<script>
+const $=id=>document.getElementById(id);let greeted=0,attached=0,replied=0;const stamp=()=>new Date().toLocaleTimeString();
+function add(text){const line=document.createElement('div');line.className='message';line.textContent=stamp()+' '+text;$('chat').appendChild(line);$('chat').scrollTop=$('chat').scrollHeight;$('counts').textContent=`开聊 ${greeted} 次，附件 ${attached} 次，回复 ${replied} 次`}
+$('application').onsubmit=e=>{e.preventDefault();$('result').textContent='申请成功 · 回执 LOCAL-001\n姓名：'+$('name').value+'\n邮箱：'+$('email').value+'\n岗位：'+$('role').value+'\n项目：'+$('experience').value};
+$('fail').onclick=()=>{$('result').textContent='提交失败：模拟服务暂不可用，请保留填写页面截图。'};
+$('greet').onclick=()=>{greeted++;add('我：您好，我对贵司岗位感兴趣，希望进一步沟通。〔平台预设〕')};
+$('askResume').onclick=()=>add('招聘方：请发送附件简历。');
+$('interview').onclick=()=>add('招聘方：税前月薪16k、深圳南山，周五下午3点来面试可以吗？');
+$('send').onclick=()=>{if($('reply').value.trim()){replied++;add('我：'+$('reply').value);$('reply').value=''}};
+$('attach').onclick=()=>{attached++;add('我：〔附件〕测试简历.pdf')};
+</script></body></html>

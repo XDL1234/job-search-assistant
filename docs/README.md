@@ -8,7 +8,7 @@
 | 桌面应用八页界面 | 已确认第一版视觉基准 | [界面与图册](design/app-ui-v1/README.md) |
 | 桌面产品与架构 | 已记录确认选项与实现边界 | [设计说明](design/app-ui-v1/desktop-spec.md) |
 | Codex 接入 | 已完成模拟数据协议探针 | [验证报告](design/app-ui-v1/codex-probe.md) |
-| 桌面应用实现 | 尚未开始 | [实施计划](superpowers/plans/2026-10-06-desktop-app-v1.md) |
+| 桌面应用实现 | 原生开发预览可启动；任务 3 完整 AI 模拟尚未通过 | [开发与验证](desktop-development.md)、[实施计划](superpowers/plans/2026-10-06-desktop-app-v1.md) |
 | 发布历史 | v0.2.0 与未发布文档更新分别记录 | [变更记录](../CHANGELOG.md) |
 
 ## 维护约定
@@ -29,8 +29,8 @@ python -X utf8 -m unittest discover -s "./tests" -v
 git diff --check
 ```
 
-桌面应用计划中的 Node/Rust 检查命令属于后续实现阶段，当前仓库尚没有该应用工程。Codex 探针原始产物位于开发机被忽略的验证目录，仓库维护的是已脱离本机路径的结果摘要；不发布凭据或原始 stderr。
+桌面 Node/Rust 检查与窗口验收命令见[开发说明](desktop-development.md)。Codex 探针及桌面测试原始产物位于开发机被忽略的验证目录；仓库仅维护摘要，不发布凭据或原始 stderr。
 
 ## 最近维护验证
 
-2026-10-06，Windows / Python 3.13：全套 42 项单元测试通过；Markdown 本地链接、图册图片引用、提示词 JSON 与 8 张 PNG 完整性检查通过。待提交文档已检查常见凭据格式和开发者个人目录路径。此次仅更新文档与设计资产，没有重新验证真实招聘网站，也没有构建桌面安装包。
+2026-10-06 的设计归档验证曾通过 42 项单元测试与设计资产检查；后续桌面开发的测试结果、外部阻断及未验收范围独立记录在[开发说明](desktop-development.md)，不以旧报告代替新实现验收。

@@ -46,6 +46,7 @@ def source_files(source):
         relative = path.relative_to(source)
         allowed = relative.as_posix() in {'SKILL.md', 'dependencies.json', 'agents/openai.yaml'}
         allowed |= relative.as_posix() in {'assets/dashboard/index.html', 'assets/dashboard/app.js', 'assets/dashboard/style.css'}
+        allowed |= relative.as_posix() == 'assets/simulation.html'
         allowed |= relative.parts[0] == 'scripts' and path.suffix == '.py' and '__pycache__' not in relative.parts
         allowed |= relative.parts[0] == 'references' and path.suffix == '.md'
         allowed |= relative.parts[0] == 'assets' and '.example.' in path.name and path.suffix in ('.json', '.csv')
