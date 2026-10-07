@@ -12,7 +12,13 @@ from pathlib import Path
 
 from .inputs import load_json
 
-SKILL_ROOT = Path(__file__).resolve().parents[2]
+def skill_root():
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS) / 'skill'
+    return Path(__file__).resolve().parents[2]
+
+
+SKILL_ROOT = skill_root()
 
 
 def default_root():

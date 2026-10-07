@@ -1,7 +1,7 @@
 //! 使用参数数组启动 Python，不把 UI 文本拼接为命令。
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{path::PathBuf, time::Duration};
+use std::{path::{Path, PathBuf}, time::Duration};
 use tokio::process::Command;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -17,10 +17,16 @@ pub struct WorkerClient {
     pub python: PathBuf,
     pub script: PathBuf,
     pub executable: Option<PathBuf>,
+    pub codex: Option<PathBuf>,
+}
+
+pub fn installed_worker(resources: &Path) -> Option<PathBuf> {
+    let executable = resources.join("runtime/worker/worker.exe");
+    executable.is_file().then_some(executable)
 }
 
 impl WorkerClient {
-    pub fn from_environment() -> Result<Self, String> {
+    pub fn from_environment(resources: &Path) -> Result<Self, String> {
         let repo = std::env::var_os("JOB_ASSISTANT_REPO")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
@@ -31,13 +37,23 @@ impl WorkerClient {
                     .join(".job-search-assistant/desktop")
             });
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        let executable = std::env::var_os("JOB_ASSISTANT_WORKER").map(PathBuf::from)
+            .or_else(|| installed_worker(resources));
+        if !cfg!(debug_assertions) && executable.is_none() {
+            return Err("安装文件不完整：缺少内置执行器，请重新安装测试版".into());
+        }
+        let codex = std::env::var_os("JOB_ASSISTANT_CODEX").map(PathBuf::from).or_else(|| {
+            let path = resources.join("runtime/codex/bin/codex.exe");
+            path.is_file().then_some(path)
+        });
         Ok(Self {
             root,
             python: std::env::var_os("JOB_ASSISTANT_PYTHON")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| "python.exe".into()),
             script: repo.join("skills/job-search-assistant/scripts/run.py"),
-            executable: std::env::var_os("JOB_ASSISTANT_WORKER").map(PathBuf::from),
+            executable,
+            codex,
         })
     }
     pub async fn request(&self, request: UiRequest) -> Result<Value, String> {

@@ -6,7 +6,6 @@ use crate::{
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -87,11 +86,11 @@ impl ExecutorCoordinator {
         if let Some(old) = self.client.lock().await.take() {
             old.close().await;
         }
-        let Some(exe) = std::env::var_os("JOB_ASSISTANT_CODEX").map(PathBuf::from) else {
+        let Some(exe) = self.worker.codex.clone() else {
             return self.set_status(
                 &app,
                 "not_installed",
-                "未找到 Codex CLI。请安装官方 Codex 后，用项目启动器重新打开应用。",
+                "未找到 Codex 执行器。安装版请重新安装；开发环境可指定 JOB_ASSISTANT_CODEX。",
             );
         };
         self.set_status(&app, "connecting", "正在连接 Codex…");

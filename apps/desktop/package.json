@@ -1,7 +1,7 @@
 {
   "name": "job-search-assistant-desktop",
   "private": true,
-  "version": "0.3.0-dev.1",
+  "version": "0.3.0-beta.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",

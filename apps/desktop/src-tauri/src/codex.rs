@@ -160,7 +160,7 @@ impl CodexClient {
             pending,
             serial: 1.into(),
         });
-        client.request("initialize", json!({"clientInfo":{"name":"job_search_desktop","title":"求职助手","version":"0.3.0-dev.1"},"capabilities":{"experimentalApi":true}})).await?;
+        client.request("initialize", json!({"clientInfo":{"name":"job_search_desktop","title":"求职助手测试版","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         client.send(json!({"method":"initialized"})).await?;
         Ok(client)
     }

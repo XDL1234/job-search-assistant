@@ -8,8 +8,8 @@
 | 桌面应用八页界面 | 已确认第一版视觉基准 | [界面与图册](design/app-ui-v1/README.md) |
 | 桌面产品与架构 | 已记录确认选项与实现边界 | [设计说明](design/app-ui-v1/desktop-spec.md) |
 | Codex 接入 | 已完成模拟数据协议探针 | [验证报告](design/app-ui-v1/codex-probe.md) |
-| 桌面应用实现 | 原生开发预览可启动；任务 3 完整 AI 模拟尚未通过 | [开发与验证](desktop-development.md)、[实施计划](superpowers/plans/2026-10-06-desktop-app-v1.md) |
-| 发布历史 | v0.2.0 与未发布文档更新分别记录 | [变更记录](../CHANGELOG.md) |
+| 桌面应用实现 | v0.3.0-beta.1 测试版安装包；真实操作验收后置 | [安装说明](releases/v0.3.0-beta.1.md)、[构建发布](desktop-packaging.md) |
+| 发布历史 | v0.2.0 Skill 与 v0.3.0-beta.1 桌面测试版分别记录 | [变更记录](../CHANGELOG.md) |
 
 ## 维护约定
 

@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "active": true,
+    "resources": {
+      "resources/worker/": "runtime/worker/",
+      "resources/codex/": "runtime/codex/",
+      "resources/licenses/": "licenses/",
+      "resources/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
+      "resources/resource-manifest.json": "resource-manifest.json"
+    }
+  }
+}

@@ -1,10 +1,12 @@
 # 求职自动化助手
 
-一个可分发的 Codex Skill / 插件源码包，供 Windows 浏览器网申、BOSS 直聘沟通和回复辅助使用。简历与个人资料由用户提供；按轮次授权后操作，面试邀约始终转人工。
+Windows 求职辅助项目，提供桌面应用测试版及 Codex Skill / 插件源码包。简历与个人资料由用户提供；按轮次授权后操作，面试邀约始终转人工。
+
+**下载桌面测试版：** [v0.3.0-beta.1 Windows x64 安装包](https://github.com/XDL1234/job-search-assistant/releases/tag/v0.3.0-beta.1)。下载 Assets 中的 `setup.exe`，可选择安装目录并创建桌面图标；无需安装 Python、Node 或 Rust。[功能范围与安装说明](docs/releases/v0.3.0-beta.1.md)。
 
 ## 项目状态与文档
 
-稳定实现为 **v0.2 Skill 与本机浏览器面板**。独立 Windows 桌面应用已进入 **v0.3 开发预览**：Tauri 原生窗口、八页导航、应用内 Codex 连接、模拟任务授权、暂停恢复、记录与截图读取已实现；完整 AI 模拟流程尚未验收通过，暂无桌面安装包。
+既有实现为 **v0.2 Skill 与本机浏览器面板**。独立 Windows 桌面应用提供 **v0.3.0-beta.1 测试版安装包**：Tauri 原生窗口、八页导航、应用内 Codex 连接、模拟任务授权、暂停恢复、记录与截图读取已实现。完整 AI 流程和真实招聘平台仍未验收通过，测试版不代表真实投递已可用。
 
 - [文档索引与维护约定](https://github.com/XDL1234/job-search-assistant/blob/main/docs/README.md)
 - [八页界面稿与设计说明](https://github.com/XDL1234/job-search-assistant/blob/main/docs/design/app-ui-v1/README.md)
@@ -12,9 +14,9 @@
 - [桌面开发预览与验证状态](docs/desktop-development.md)
 - [变更记录](https://github.com/XDL1234/job-search-assistant/blob/main/CHANGELOG.md)
 
-桌面应用采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。当前只开放虚构资料的本地模拟入口；真实投递配置、人工确认发送、PDF/Word 资料解析及安装包仍在后续计划中，不能视为当前 v0.2 已支持。
+桌面应用采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。当前只开放虚构资料的本地模拟入口；真实投递配置、人工确认发送、PDF/Word 资料解析仍在后续计划中。
 
-## 安装与使用
+## 单独安装 Skill（开发者与既有用户）
 
 需要 Windows、Python 3.11+、能运行本地命令并查看图片的 Codex 会话。解压后在 PowerShell 执行：
 

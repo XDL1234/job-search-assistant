@@ -257,7 +257,7 @@ export default function App() {
         <div className="topline">
           <span>我的求职空间</span>
           <div>
-            <span className="pill">本地模拟 · 开发预览</span>
+            <span className="pill">测试版 0.3.0-beta.1 · 部分功能未开放</span>
             <span
               className={`dot ${connection.state === "ready" ? "online" : ""}`}
             />

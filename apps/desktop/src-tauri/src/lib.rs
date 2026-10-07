@@ -70,7 +70,7 @@ pub fn run() {
             }
         }))
         .setup(|app| {
-            let worker = WorkerClient::from_environment().map_err(std::io::Error::other)?;
+            let worker = WorkerClient::from_environment(&app.path().resource_dir()?).map_err(std::io::Error::other)?;
             tauri::async_runtime::block_on(worker.call("recover_app", json!({})))
                 .map_err(std::io::Error::other)?;
             app.manage(Arc::new(ExecutorCoordinator::new(worker)));

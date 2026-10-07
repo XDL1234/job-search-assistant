@@ -1,11 +1,14 @@
 [package]
 name = "job-search-desktop"
-version = "0.3.0-dev.1"
+version = "0.3.0-beta.1"
 edition = "2021"
 
 [lib]
 name = "job_search_desktop"
 crate-type = ["lib"]
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
