@@ -71,5 +71,38 @@ class BrowserBridgeTests(unittest.TestCase):
         (Path(self.temp.name)/'profile.json').write_text('{"name":"changed"}')
         self.assertFalse(self.server.valid_command(command))
 
+    def reply_command(self,manual=False):
+        attempt=self.db.begin_attempt(self.run,'测试','https://www.zhipin.com/job_detail/test.html','嵌入式','boss','job1')
+        self.db.observe_message('hr1','m1','多久到岗？')
+        if manual:
+            self.db.handoff('hr1','interview')
+            action=self.db.prepare_manual_reply(self.run,attempt,'hr1','m1','下周到岗',True)
+        else:
+            action=self.db.prepare_action(self.run,attempt,'reply','hr1',{'message_key':'m1','text':'下周到岗'})
+        self.db.claim_action(self.run,action)
+        return {'id':'reply','operation':'reply','run_id':self.run,'expires':time.time()+10,'action_id':action,
+                'conversation':'hr1','message_key':'m1','message_text':'多久到岗？','text':'下周到岗','manual':manual}
+
+    def test_reply_lease_revoked_after_handoff_or_message_changes(self):
+        command=self.reply_command()
+        self.assertTrue(self.server.valid_command(command))
+        self.db.handoff('hr1','interview')
+        self.assertFalse(self.server.valid_command(command))
+        self.db.resume_conversation('hr1','用户恢复')
+        self.assertTrue(self.server.valid_command(command))
+        self.db.observe_message('hr1','m2','还有其他安排吗？')
+        self.assertFalse(self.server.valid_command(command))
+
+    def test_manual_lease_expires_and_cannot_be_forged_by_model(self):
+        command=self.reply_command(manual=True)
+        self.assertTrue(self.server.valid_command(command))
+        with self.db.conn:self.db.conn.execute('UPDATE manual_sends SET expires=0')
+        self.assertFalse(self.server.valid_command(command))
+
+    def test_reply_lease_is_bound_to_exact_payload(self):
+        command=self.reply_command()
+        for change in ({'text':'不同承诺'},{'conversation':'someone_else'},{'message_text':'被替换的问题'},{'manual':True}):
+            self.assertFalse(self.server.valid_command({**command,**change}))
+
 
 if __name__=='__main__':unittest.main()

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "求职助手 · 浏览器连接器",
-  "version": "0.3.0.2",
-  "version_name": "0.3.0-beta.2",
+  "version": "0.3.0.3",
+  "version_name": "0.3.0-beta.3",
   "minimum_chrome_version": "120",
   "description": "连接本机求职助手，在已登录 BOSS 标签页执行已确认任务。",
   "permissions": ["storage", "tabs", "alarms", "debugger"],

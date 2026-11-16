@@ -14,6 +14,7 @@ export type UiMethod =
   | "get_reply_settings"
   | "save_reply_settings"
   | "preview_reply"
+  | "attention_update"
   | "browser_status";
 export interface TaskConfig {
   channels: string[];
@@ -67,6 +68,9 @@ export interface Snapshot {
     reason: string;
     resolved: number;
   }[];
+  messages?: { conversation_id: string; message_key: string; text: string }[];
+  conversations?: { id: string; status: string; latest_message: string; reason: string }[];
+  reply_targets?: { run_id: string; conversation: string; attempt_id: string; message_key: string; text: string }[];
   fields: {
     attempt_id: string;
     name: string;

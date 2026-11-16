@@ -40,17 +40,37 @@ class BridgeServer(ThreadingHTTPServer):
         from .store import Store
         with_db = Store(self.root)
         try:
-            with_db.check_run(command['run_id'])
+            operation = command.get('operation')
+            with_db.check_run(command['run_id'], operation)
             from .cli import verify_materials
             config = verify_materials(with_db,command['run_id'])
             if 'boss' not in config['channels']:
                 return False
-            if command.get('operation') in ('greet','reply'):
+            if operation in ('greet','reply','resume'):
                 action = with_db.one('actions',command.get('action_id',''))
-                if action['run_id'] != command['run_id'] or action['status'] != 'executing' or action['kind'] != command['operation']:
+                if action['run_id'] != command['run_id'] or action['status'] != 'executing' or action['kind'] != operation:
                     return False
-                if command['operation']=='greet' and with_db.one('attempts',action['attempt_id'])['url'] != command.get('url'):
+                if operation=='greet' and with_db.one('attempts',action['attempt_id'])['url'] != command.get('url'):
                     return False
+                if operation in ('reply','resume'):
+                    payload = json.loads(action['payload'])
+                    state = with_db.one('conversations',action['recipient'])
+                    manual = with_db.manual_send_allowed(action)
+                    if (state['latest_message'] != payload.get('message_key')
+                            or (state['status']=='human' and not manual)
+                            or command.get('conversation') != action['recipient']
+                            or command.get('message_key') != payload.get('message_key')
+                            or command.get('manual',False) != manual):
+                        return False
+                    if operation=='reply' and command.get('text') != payload.get('text'):
+                        return False
+                    message=with_db.conn.execute('SELECT text FROM messages WHERE conversation_id=? AND message_key=?',
+                                                 (action['recipient'],payload.get('message_key'))).fetchone()
+                    if not message or message[0]!=command.get('message_text'):
+                        return False
+                    if operation=='resume' and (command.get('resume_path') != config['resume_path']
+                            or payload.get('resume_sha256') != config['resume_sha256']):
+                        return False
             return True
         except (ValueError,KeyError,OSError):
             return False
@@ -123,7 +143,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 raise ValueError('请求大小不合法')
             value = json.loads(self.rfile.read(length))
             if self.path == '/command':
-                if not isinstance(value, dict) or value.get('operation') not in {'observe', 'open_job', 'greet', 'next', 'return', 'messages', 'reply'}:
+                if not isinstance(value, dict) or value.get('operation') not in {'observe', 'open_job', 'greet', 'next', 'return', 'messages', 'open_conversation', 'reply', 'resume'}:
                     raise ValueError('浏览器操作不支持')
                 command = {**value, 'id': uuid.uuid4().hex, 'expires': time.time()+35,
                            'claimed': False, 'event': threading.Event(), 'response': None}
@@ -181,11 +201,11 @@ def serve(root):
 def connection_status(root):
     path=Path(root)/'browser-bridge.json'
     if not path.is_file():
-        return {'connected':False}
+        return {'connected':False,'ready':False}
     try:
         info=json.loads(path.read_text(encoding='utf-8'))
         req=urllib.request.Request(f"http://127.0.0.1:{int(info['port'])}/status",headers={'Authorization':'Bearer '+info['token']})
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req,timeout=1) as response:
-            return {'connected':json.loads(response.read()).get('connected') is True}
+            return {'connected':json.loads(response.read()).get('connected') is True,'ready':True}
     except (ValueError,KeyError,OSError,TypeError):
-        return {'connected':False}
+        return {'connected':False,'ready':False}

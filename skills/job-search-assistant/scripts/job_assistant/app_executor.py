@@ -8,7 +8,7 @@ from .cli import dispatch, verify_materials
 from .panel_state import check_fresh_frame
 
 ALLOWED = {'status', 'bind', 'capture', 'act', 'begin', 'field', 'evidence', 'prepare', 'finish',
-           'attempt_status', 'route_message', 'handoff', 'select_job', 'tick', 'verify_materials', 'browser'}
+           'attempt_status', 'route_message', 'handoff', 'select_job', 'tick', 'verify_materials', 'browser', 'boss_decide'}
 
 
 def executor_action(store, run_id, request):
@@ -27,6 +27,13 @@ def executor_action(store, run_id, request):
     if req.get('action_id') and store.one('actions', req['action_id'])['run_id'] != run_id:
         raise ValueError('动作不属于当前轮次')
     op = req['operation']
+    if config.get('simulation') is not True and config.get('channels') == ['boss'] and op in ('bind', 'capture', 'act'):
+        raise ValueError('BOSS 后台任务请使用受控 browser 操作，不使用桌面坐标发送')
+    if op == 'boss_decide':
+        from .boss_messages import decide_message
+        result = decide_message(store, run_id, req['conversation'], req['message_key'],
+            req.get('analysis'), req.get('draft', ''), req.get('sources'))
+        return {'success': True, 'contentItems': [{'type': 'inputText', 'text': json.dumps(result, ensure_ascii=False)}]}
     if op == 'browser':
         from .boss_script import browser_action, greet
         from .desktop import desktop_lock
@@ -34,8 +41,12 @@ def executor_action(store, run_id, request):
         with desktop_lock(store.root):
             if action == 'greet':
                 result = greet(store,run_id,req['attempt_id'],req['action_id'])
-            elif action in ('observe','open_job','next','return','messages'):
-                result = browser_action(store,run_id,action,**({'key':req['key']} if action=='open_job' else {}))
+            elif action == 'send_message':
+                from .boss_messages import send_action
+                result = send_action(store, run_id, req['action_id'])
+            elif action in ('observe','open_job','next','return','messages','open_conversation'):
+                params = {'key': req['key']} if action=='open_job' else ({'conversation':req['conversation']} if action=='open_conversation' else {})
+                result = browser_action(store,run_id,action,**params)
             else:
                 raise ValueError('不允许此浏览器操作')
         return {'success':True,'contentItems':[{'type':'inputText','text':json.dumps(result,ensure_ascii=False)},

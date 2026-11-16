@@ -107,6 +107,15 @@ class AppExecutionTests(unittest.TestCase):
             result = self.call('executor_action', run_id=run, request={'operation': operation, 'run_id': 'wrong'})
             self.assertFalse(result['ok'], result)
 
+    def test_internal_watch_transition_cannot_resume_a_paused_run(self):
+        _, run = self.demo()
+        self.db.control(run, 'running')
+        self.assertTrue(self.call('enter_watch', run_id=run)['ok'])
+        self.assertEqual(self.db.one('runs', run)['status'], 'watching')
+        self.db.control(run, 'paused')
+        self.assertFalse(self.call('enter_watch', run_id=run)['ok'])
+        self.assertEqual(self.db.one('runs', run)['status'], 'paused')
+
     def test_evidence_requires_current_run_and_post_resume_frame(self):
         from PIL import Image
         preview, run = self.demo()

@@ -69,6 +69,10 @@ class Dashboard:
                     raise ValueError('处理意见需为 1 至 4000 字符')
                 store.conn.execute('INSERT INTO attention_notes VALUES (?,?,?,?,?)',
                                    (uuid.uuid4().hex, row['id'], message_key, text.strip(), now()))
+            elif request['action'] == 'handoff':
+                if request.get('confirmed') is not True or not conversation:
+                    raise ValueError('需要明确接管当前会话')
+                store.conn.execute("UPDATE conversations SET status='human',reason='用户接管',updated=? WHERE id=?", (now(), row['subject']))
             elif request['action'] in ('resume', 'resolve'):
                 if request.get('confirmed') is not True:
                     raise ValueError('需要明确确认已完成人工处理')

@@ -32,6 +32,7 @@ import packageInfo from "../package.json";
 import { Profile } from "./pages/Profile";
 import { TaskSetup } from "./pages/TaskSetup";
 import { Replies } from "./pages/Replies";
+import { Inbox } from "./pages/Inbox";
 import type { Connection, ExecutorEvent, Snapshot } from "./contracts";
 
 const navigation = [
@@ -692,32 +693,7 @@ export default function App() {
           </section>
         )}
         {page === "inbox" && (
-          <section className="card">
-            <div className="section-title">
-              <h2>待我处理</h2>
-              <span>面试邀约始终由你决定</span>
-            </div>
-            {attention.length ? (
-              attention.map((a) => (
-                <div className="attention-row" key={a.id}>
-                  <Bell />
-                  <div>
-                    <strong>{a.subject}</strong>
-                    <p>{a.reason}</p>
-                    <span className="badge needs_user">会话已锁定</span>
-                    <p>
-                      本阶段请在原会话处理；应用内确认发送将在后续阶段接入。
-                    </p>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="empty">
-                <ShieldCheck />
-                <strong>暂无新待办</strong>
-              </div>
-            )}
-          </section>
+          <Inbox snapshot={snapshot} onChanged={refresh} />
         )}
         {page === "settings" && (
           <section className="card settings">

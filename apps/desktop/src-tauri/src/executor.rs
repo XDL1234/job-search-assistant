@@ -85,7 +85,22 @@ impl ExecutorCoordinator {
                 .spawn()
                 .map_err(|e| e.to_string())?;
             *process = Some(child);
-            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if process
+                .as_mut()
+                .is_none_or(|child| !matches!(child.try_wait(), Ok(None)))
+            {
+                return Err("浏览器连接器已退出，请检查端口占用后重试".into());
+            }
+            if self.worker.call("browser_status", json!({})).await?["ready"] == true {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err("浏览器连接器启动超时，请重试".into());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
         let path = self.worker.root.join("browser-bridge.json");
         let info: Value =
@@ -255,7 +270,7 @@ impl ExecutorCoordinator {
                 .is_some_and(|channels| channels.contains(&json!("boss")))
         {
             self.browser_connect().await?;
-            if self.worker.call("browser_status",json!({})).await?["connected"] != true {
+            if self.worker.call("browser_status", json!({})).await?["connected"] != true {
                 return Err("请先在 Chrome 加载并连接浏览器扩展，再开始任务".into());
             }
         }
@@ -273,6 +288,9 @@ impl ExecutorCoordinator {
         if context["config"]["execution_mode"] == "script" {
             return self.run_script(app, run).await;
         }
+        self.start_ai_turn(run, context).await
+    }
+    async fn start_ai_turn(&self, run: &str, context: Value) -> Result<(), String> {
         let client = self.get_client().await?;
         let previous = context["session"]["thread_id"].as_str();
         let thread = if let Some(id) = previous {
@@ -307,7 +325,7 @@ impl ExecutorCoordinator {
         if self.cancelled(run) {
             return Err("任务已暂停".into());
         }
-        let text=format!("使用 $job-search-assistant 完成本轮已确认任务。应用已准备依赖与授权，仅使用 job_action。配置与资料：{}。先 status 核查未决动作；simulation=true 按模拟流程。真实 BOSS 优先 browser action=observe 读取当前标签页，按 employment_type 和 boss_mode 筛选。官网仅操作 company_rows 授权网站，逐字段留截图。到上限或页面受限就停止，面试整条转人工。不要创造额外要求或话术。",context);
+        let text=format!("使用 $job-search-assistant 完成本轮已确认任务。应用已准备依赖与授权，仅使用 job_action。配置与资料：{}。先 status 核查未决动作；simulation=true 按模拟流程。若run.status=watching只处理当前新消息，禁止新增沟通；真实 BOSS 优先 browser action=observe 读取标签页，按 employment_type 和 boss_mode 筛选。官网仅操作 company_rows 授权网站，逐字段留截图。到上限或页面受限就停止，面试整条转人工。不要创造额外要求或话术。",context);
         let result=client.request("turn/start",json!({"threadId":thread_id,"input":[{"type":"skill","name":"job-search-assistant","path":context["skill_path"]},{"type":"text","text":text}]})).await?;
         let turn = result["turn"]["id"]
             .as_str()
@@ -358,28 +376,75 @@ impl ExecutorCoordinator {
                 json!({"text":format!("{}\n",result["message"].as_str().unwrap_or("已处理一步"))}),
             );
             if result["done"] == true {
-                break;
+                return self.run_watch(app, run).await;
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
-        self.worker.pause(run).await?;
+    }
+    async fn run_watch(&self, app: &AppHandle, run: &str) -> Result<(), String> {
+        if self.cancelled(run) {
+            return Err("任务已暂停".into());
+        }
+        self.worker
+            .call("enter_watch", json!({"run_id":run}))
+            .await?;
+        if self.cancelled(run) {
+            return Err("任务已暂停".into());
+        }
         self.worker
             .call(
                 "bind_session",
-                json!({"run_id":run,"state":"idle","thread_id":null}),
+                json!({"run_id":run,"state":"watching","thread_id":null}),
             )
             .await?;
-        if let Some(active) = self
-            .active
-            .lock()
-            .unwrap()
-            .as_mut()
-            .filter(|a| a.run == run)
-        {
-            active.gate.finished();
+        self.emit(app, run, "state", json!({"state":"watching"}));
+        loop {
+            if self.cancelled(run) {
+                return Err("任务已暂停".into());
+            }
+            let result = {
+                let _tool = self.tool_lock.lock().await;
+                if self.cancelled(run) {
+                    return Err("任务已暂停".into());
+                }
+                self.worker
+                    .call("watch_step", json!({"run_id":run}))
+                    .await?
+            };
+            if result["ai_required"].is_object() {
+                if self.status().state == "ready" {
+                    let context = self
+                        .worker
+                        .call("execution_context", json!({"run_id":run}))
+                        .await?;
+                    return self.start_ai_turn(run, context).await;
+                }
+            }
+            if result["notify"] == true {
+                self.emit(app, run, "attention", json!({"message":result["message"]}));
+            }
+            let delay = result["delay_seconds"].as_u64().unwrap_or(60).clamp(1, 300);
+            for _ in 0..delay {
+                if self.cancelled(run) {
+                    return Err("任务已暂停".into());
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
         }
-        self.emit(app, run, "state", json!({"state":"completed"}));
-        Ok(())
+    }
+    pub async fn inbox_send(&self, params: Value) -> Result<Value, String> {
+        let _tool = self.tool_lock.lock().await;
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("应用正在关闭".into());
+        }
+        self.worker.call("manual_reply", params).await
+    }
+    pub async fn inbox_open(&self, params: Value) -> Result<Value, String> {
+        let _tool = self.tool_lock.lock().await;
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("应用正在关闭".into());
+        }
+        self.worker.call("reply_focus", params).await
     }
     pub async fn control(&self, app: &AppHandle, run: &str, action: &str) -> Result<(), String> {
         if !matches!(action, "paused" | "stopped") {
@@ -453,7 +518,13 @@ impl ExecutorCoordinator {
         }
         if method == "client/disconnected" || method == "client/protocolError" {
             self.set_status(&app, "error", "Codex 连接已断开，请重新连接");
-            let run = self.active.lock().unwrap().as_ref().map(|a| a.run.clone());
+            let run = self
+                .active
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|a| a.thread.is_some())
+                .map(|a| a.run.clone());
             if let Some(run) = run {
                 self.fail(&app, &run, "Codex 中断，已暂停任务；未决操作需核查")
                     .await;
@@ -520,6 +591,51 @@ impl ExecutorCoordinator {
             }
             if let Some(error) = turn_failure(&params["turn"]) {
                 self.fail(&app, &run, &error).await;
+                return;
+            }
+            let context = self
+                .worker
+                .call("execution_context", json!({"run_id":run}))
+                .await;
+            if !self.cancelled(&run)
+                && context.as_ref().is_ok_and(|c| {
+                    c["config"]["simulation"] != true
+                        && c["config"]["channels"]
+                            .as_array()
+                            .is_some_and(|v| v.contains(&json!("boss")))
+                })
+            {
+                if let Err(error) = self
+                    .worker
+                    .call("finish_ai_watch", json!({"run_id":run}))
+                    .await
+                {
+                    self.fail(&app, &run, &error).await;
+                    return;
+                }
+                let watching = {
+                    if let Some(a) = self
+                        .active
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .filter(|a| a.run == run)
+                    {
+                        a.thread = None;
+                        a.gate.finish_for_watch()
+                    } else {
+                        false
+                    }
+                };
+                if !watching {
+                    return;
+                }
+                let runtime = self.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = runtime.run_watch(&app, &run).await {
+                        runtime.fail(&app, &run, &error).await;
+                    }
+                });
                 return;
             }
             let _ = self.worker.pause(&run).await;

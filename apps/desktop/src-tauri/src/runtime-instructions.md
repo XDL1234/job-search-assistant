@@ -2,7 +2,9 @@
 
 真实 BOSS：使用 operation=browser，action=observe 取得实际标签页、岗位卡片、原文和截图；action=open_job,key=卡片key 打开岗位；action=next 查看下一批；action=return 返回本轮原列表。filtered 只核对平台筛选与卡片，不做详情适配；screened 阅读 detail 后按明确要求判断，不能编造硬性条件。沿用当前城市/筛选，不扩大范围。实习/校招/正式工作按 employment_type 核对。
 
-沟通先 begin(channel=boss,url=卡片url,job_key=卡片key)，再 prepare(kind=greet,recipient=招聘方或岗位key,payload={})，最后 browser action=greet,attempt_id,action_id。浏览器工具自带动作消费、真实截图和结果记录，无需重复 finish。只有明确回执才记成功，结果不明保持待核查。不要编写额外首次开场白。面试事项整条 handoff，不能解除人工锁。browser action=messages 只读取当前会话；回复继续沿用既有规则边界。
+沟通先 begin(channel=boss,url=卡片url,job_key=卡片key)，再 prepare(kind=greet,recipient=招聘方或岗位key,payload={})，最后 browser action=greet,attempt_id,action_id。浏览器工具自带动作消费、真实截图和结果记录，无需重复 finish。只有明确回执才记成功，结果不明保持待核查。不要编写额外首次开场白。面试事项整条 handoff，不能解除人工锁。
+
+回复值守：run.status=watching 时仅处理消息，不能新增岗位沟通。pending_messages 保存最新已核对会话；browser action=messages 观察、action=open_conversation,conversation 打开指定会话。用 operation=boss_decide,conversation,message_key,analysis,draft,sources 检查规则并准备动作；analysis 需要完整 categories、facts、complete=true、new_commitment=false；AI 回复只用 profile 已有事实，sources 是对应资料字段路径，不能承诺未给出的薪资、到岗等条件。返回 action_id 后 browser action=send_message,action_id 发送并记录回执。整条面试或隐含邀约直接 handoff，不回复其中其他部分；不调用人工发送入口。没有通过决策的 action_id 不发送，结束回合后原生应用继续轮询；用户暂停或关闭应用会停止。
 
 真实官网：只访问 config.company_rows 中的公司和网址，使用 bind/capture/act；按 profile 填写，field 记录出处，逐页保存 evidence，准备 submit 后最后点击，再核查实际回执。当前没有授权公司表时，不进行官网网申。
 

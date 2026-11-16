@@ -8,6 +8,8 @@ const allowed = new Set([
   "return",
   "messages",
   "reply",
+  "resume",
+  "open_conversation",
 ]);
 
 async function connection() {
@@ -50,6 +52,39 @@ async function screenshot(tabId) {
     await chrome.debugger.detach(target);
   }
 }
+async function pageCommand(tabId, command) {
+  return chrome.tabs.sendMessage(tabId,{...command,type:'job-command'});
+}
+async function navigate(tabId,url) {
+  await chrome.tabs.update(tabId,{url});
+  for(let i=0;i<20;i++) {
+    await new Promise(resolve=>setTimeout(resolve,300));
+    const tab=await chrome.tabs.get(tabId);
+    if(tab.status==='complete' && tab.url===url) return;
+  }
+  throw new Error('页面未完成加载，请稍后核查');
+}
+async function uploadResume(tabId, command, prepared) {
+  const target={tabId};
+  if(!/^[A-Za-z]:[\\/]/.test(command.resume_path || '') ||
+      !prepared.upload_selector || !Array.isArray(prepared.before_keys))
+    throw new Error('附件材料或上传入口无效');
+  await chrome.debugger.attach(target,'1.3');
+  try {
+    if(!(await http(`/lease/${command.id}`)).valid) throw new Error('任务已暂停');
+    const {root}=await chrome.debugger.sendCommand(target,'DOM.getDocument');
+    const {nodeId}=await chrome.debugger.sendCommand(target,'DOM.querySelector',{nodeId:root.nodeId,selector:prepared.upload_selector});
+    if(!nodeId) throw new Error('上传入口已变化');
+    const checked=await pageCommand(tabId,command);
+    if(!checked?.ok || checked.result.upload_selector!==prepared.upload_selector)
+      throw new Error('会话或上传入口已变化');
+    if(!(await http(`/lease/${command.id}`)).valid) throw new Error('任务已暂停');
+    await chrome.debugger.sendCommand(target,'DOM.setFileInputFiles',{nodeId,files:[command.resume_path]});
+  } finally {await chrome.debugger.detach(target);}
+  await new Promise(resolve=>setTimeout(resolve,1200));
+  return pageCommand(tabId,{...command,resume_stage:'verify',
+    filename:command.resume_path.split(/[\\/]/).pop(),before_keys:prepared.before_keys});
+}
 async function tick() {
   if (polling) return;
   polling = true;
@@ -77,21 +112,20 @@ async function tick() {
       if (command.operation === "return") {
         const key = "return-" + command.run_id;
         const saved = await chrome.storage.session.get(key);
-        if (!saved[key] || !origins.has(new URL(saved[key]).origin))
+        const returned=typeof saved[key]==='string'?{url:saved[key]}:saved[key];
+        if (!returned?.url || !origins.has(new URL(returned.url).origin))
           throw new Error("没有可核验的推荐页返回位置");
         if (!(await http(`/lease/${command.id}`)).valid)
           throw new Error("任务已暂停");
-        await chrome.tabs.update(tab.id, { url: saved[key] });
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        data = {
-          ok: true,
-          result: { url: saved[key], title: "BOSS 推荐列表", returned: true },
-        };
-      } else
-        data = await chrome.tabs.sendMessage(tab.id, {
-          ...command,
-          type: "job-command",
-        });
+        await navigate(tab.id,returned.url);
+        data=await pageCommand(tab.id,returned.position?{...command,operation:'restore_position',position:returned.position}:{...command,operation:'observe'});
+      } else {
+        if(command.operation==='messages' && !new URL(tab.url).pathname.startsWith('/web/geek/chat'))
+          await navigate(tab.id,'https://www.zhipin.com/web/geek/chat');
+        data=await pageCommand(tab.id,command);
+        if(command.operation==='resume' && data?.ok)
+          data=await uploadResume(tab.id,command,data.result);
+      }
       if (!data?.ok) throw new Error(data?.error || "页面未能执行命令");
       if (data.result.navigate) {
         const destination = new URL(data.result.navigate);
@@ -101,16 +135,17 @@ async function tick() {
         )
           throw new Error("岗位链接不在允许范围");
         await chrome.storage.session.set({
-          ["return-" + command.run_id]: data.result.return_url,
+          ["return-" + command.run_id]: {url:data.result.return_url,position:data.result.return_position},
         });
-        await chrome.tabs.update(tab.id, { url: destination.href });
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await navigate(tab.id,destination.href);
       }
       // 截图始终针对绑定标签页，即使该页处于后台；不截取用户的其他标签。
       const image = await screenshot(tab.id);
       const current = await chrome.tabs.get(tab.id);
       if (!origins.has(new URL(current.url).origin))
         throw new Error("截图页面已离开授权网站");
+      if (data.result.url && current.url!==data.result.url && !data.result.navigate)
+        throw new Error('截图前页面已变化，请核查本次操作');
       response = {
         ok: true,
         result: {

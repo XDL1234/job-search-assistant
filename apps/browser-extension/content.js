@@ -12,6 +12,59 @@
   const nodes = (selector) => Array.from(document.querySelectorAll(selector));
   const one = (root, selector) => root.querySelector(selector);
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const messageSelector = '.message-item,.chat-message,.chat-conversation .message';
+  function listScroller() {
+    const card = cards()[0]?._element;
+    for (let parent = card?.parentElement; parent; parent = parent.parentElement) {
+      if (parent.scrollHeight > parent.clientHeight + 10 &&
+          /auto|scroll/.test(getComputedStyle(parent).overflowY)) return parent;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+  function position() {
+    const scroll = listScroller();
+    return {top:scroll.scrollTop || 0,height:scroll.scrollHeight,viewport:scroll.clientHeight};
+  }
+  function stableId(node) {
+    for (const key of ['data-mid','data-message-id','data-id','data-uid','data-user-id']) {
+      const value = node?.getAttribute(key);
+      if (value) return key + ':' + value;
+    }
+    return '';
+  }
+  function conversations() {
+    return nodes('.user-list li[role="listitem"],.chat-list li[role="listitem"],.conversation-item[data-id],li[role="listitem"][data-id]')
+      .filter(shown).map(node => ({
+        key:stableId(node),label:text(one(node,'.name-box,.name-text')),
+        unread:shown(one(node,'.unread-count,.badge-count,.notice-badge')) && text(one(node,'.unread-count,.badge-count,.notice-badge'))!=='0',
+        active:/(^|\s)(active|selected)(\s|$)/.test(String(node.className || '')),
+        _element:node,
+      })).filter(row=>row.key);
+  }
+  function chatSnapshot() {
+    const active = conversations().filter(row=>row.active);
+    const conversation = active.length===1 ? active[0].key : '';
+    const messages = nodes(messageSelector).filter(shown).map(node=>{
+      const classes=String(node.className || '');
+      const incoming=/(^|\s)(item-friend|message-other|incoming)(\s|$)/.test(classes);
+      const outgoing=/(^|\s)(item-myself|message-self|outgoing)(\s|$)/.test(classes);
+      return {key:stableId(node),text:text(node),direction:incoming && !outgoing?'incoming':outgoing && !incoming?'outgoing':'unknown'};
+    });
+    const jobs=nodes('.chat-content a[href*="/job_detail/"],.chat-conversation a[href*="/job_detail/"],.chat-job a[href*="/job_detail/"]')
+      .map(node=>new URL(node.href,location.href)).filter(url=>url.origin===location.origin).map(url=>url.pathname);
+    return {conversation,messages,job_keys:[...new Set(jobs)],
+      conversations:conversations().map(({_element,...row})=>row)};
+  }
+  function verifyChat(command) {
+    const chat=chatSnapshot();
+    const latest=chat.messages.at(-1);
+    if (!command.conversation || chat.conversation!==command.conversation || !latest?.key ||
+        latest.key!==command.message_key || latest.direction!=='incoming' || latest.text!==command.message_text)
+      throw new Error('会话或最新消息已变化，停止发送');
+    if (!command.manual && /面试|interview|过来聊聊|预约时间|来(?:我们)?公司.*(?:聊|见)|到(?:公司|现场).*聊/i.test(latest.text))
+      throw new Error('面试事项保持人工接管');
+    return chat;
+  }
   function guard() {
     if (location.origin !== "https://www.zhipin.com")
       throw new Error("不是授权的 BOSS 网站");
@@ -71,6 +124,7 @@
         .map(text)
         .filter(Boolean),
       text: body.slice(-18000),
+      position: position(),
     };
   }
   function exactButton(pattern) {
@@ -102,6 +156,7 @@
       return {
         navigate: link.href,
         return_url: location.href,
+        return_position: position(),
         job: card.job,
         company: card.company,
       };
@@ -110,14 +165,26 @@
       await lease(command);
       const next = nodes(
         ".options-pages a,.pagination a,.ui-icon-arrow-right",
-      ).find((node) => shown(node) && /下一页|›|»/.test(text(node)));
+      ).find((node) => shown(node) && !/disabled/.test(String(node.className||'')) && /下一页|›|»/.test(text(node)));
       if (next) {
         next.click();
         await sleep(700);
         return snapshot();
       }
-      window.scrollBy({ top: 700, behavior: "instant" });
+      const scroll=listScroller();
+      scroll.scrollTop = scroll.scrollHeight;
       await sleep(700);
+      return snapshot();
+    }
+    if (command.operation === 'restore_position') {
+      const top=command.position?.top;
+      if (!Number.isFinite(top) || top<0 || top>1000000) throw new Error('返回位置无效');
+      for(let i=0;i<10;i++) {
+        await lease(command);
+        const scroll=listScroller(); scroll.scrollTop=top;
+        if (Math.abs(scroll.scrollTop-top)<20) break;
+        await sleep(400);
+      }
       return snapshot();
     }
     if (command.operation === "greet") {
@@ -134,39 +201,51 @@
       )
         return { sent: false, already_contacted: true, ...snapshot() };
       const button = exactButton(/^(立即沟通|立即开聊|打招呼)$/);
+      const before=text(button);
       await lease(command);
       button.click();
       await sleep(1100);
-      const body = guard();
-      const sent =
-        /已向.*发送|打招呼成功|沟通成功|已发送招呼|已发送消息/.test(body) ||
-        /继续沟通/.test(
-          text(document.querySelector(".job-banner,.job-op,.job-detail")),
-        );
+      guard();
+      if (expected.pathname!==location.pathname) throw new Error('沟通后页面已切换，请核查回执');
+      const sent = /^(立即沟通|立即开聊|打招呼)$/.test(before) &&
+        /继续沟通|已沟通/.test(text(document.querySelector('.job-banner,.job-op,.job-detail')));
       return { sent, uncertain: !sent, ...snapshot() };
     }
     if (command.operation === "messages") {
-      const messages = nodes(
-        ".message-item,.chat-message,.chat-conversation .message",
-      )
-        .filter(shown)
-        .map((node, index) => ({
-          key: node.getAttribute("data-id") || `${index}:${text(node)}`,
-          text: text(node),
-        }));
-      return { messages, ...snapshot() };
+      return {...snapshot(),...chatSnapshot()};
+    }
+    if (command.operation==='open_conversation') {
+      const matches=conversations().filter(row=>row.key===command.conversation);
+      if(matches.length!==1) throw new Error('无法唯一确定目标会话');
+      await lease(command);matches[0]._element.click();await sleep(700);
+      const chat=chatSnapshot();
+      if(chat.conversation!==command.conversation) throw new Error('未能打开指定会话');
+      return {...snapshot(),...chat};
+    }
+    if (command.operation==='resume') {
+      if(command.resume_stage==='verify') {
+        const chat=chatSnapshot();
+        if(chat.conversation!==command.conversation ||
+            !chat.messages.some(message=>message.key===command.message_key && message.direction==='incoming' && message.text===command.message_text))
+          throw new Error('上传后会话或原始请求已变化，请人工核查');
+        const sent=chat.messages.some(message=>message.direction==='outgoing' && message.key &&
+          !command.before_keys.includes(message.key) && message.text.includes(command.filename) &&
+          !/发送失败|重试|上传中/.test(message.text));
+        return {sent,uncertain:!sent,...snapshot(),...chat};
+      }
+      const chat=verifyChat(command);
+      const files=nodes('.chat-content input[type="file"],.chat-container input[type="file"],.chat-conversation input[type="file"]')
+        .filter(node=>!node.disabled && /pdf|doc/i.test(node.accept || ''));
+      if(files.length!==1) throw new Error('无法唯一核实指定简历上传入口，请人工发送');
+      await lease(command);
+      files[0].setAttribute('data-job-assistant-upload',command.id);
+      return {upload_selector:`input[data-job-assistant-upload="${command.id}"]`,
+        before_keys:chat.messages.map(message=>message.key).filter(Boolean)};
     }
     if (command.operation === "reply") {
-      const current = nodes(
-        ".message-item,.chat-message,.chat-conversation .message",
-      )
-        .filter(shown)
-        .map(text)
-        .join("\n");
-      if (!command.message_text || !current.endsWith(command.message_text))
-        throw new Error("会话消息已更新或无法核对，停止发送");
-      if (/面试|过来聊聊|预约时间/.test(current))
-        throw new Error("面试事项保持人工接管");
+      let before;
+      try {before=verifyChat(command);}
+      catch(error) {return {sent:false,not_done:true,reason:error.message,...snapshot(),...chatSnapshot()};}
       const input = document.querySelector(
         'textarea.chat-input,[contenteditable="true"].chat-input,#chat-input',
       );
@@ -186,12 +265,14 @@
       } else input.textContent = command.text;
       input.dispatchEvent(new Event("input", { bubbles: true }));
       await lease(command);
+      verifyChat(command);
       exactButton(/^发送$/).click();
       await sleep(900);
-      const sent = nodes(
-        ".message-item,.chat-message,.chat-conversation .message",
-      ).some((node) => text(node) === command.text);
-      return { sent, uncertain: !sent, ...snapshot() };
+      const after=chatSnapshot();
+      const keys=new Set(before.messages.map(message=>message.key));
+      const sent=after.conversation===command.conversation && after.messages.some(message=>
+        message.direction==='outgoing' && message.key && !keys.has(message.key) && message.text===command.text);
+      return { sent, uncertain: !sent, ...snapshot(),...after };
     }
     throw new Error("不支持的页面命令");
   }

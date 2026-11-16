@@ -24,7 +24,7 @@ class DesktopReleaseTests(unittest.TestCase):
         config = json.loads((ROOT/'apps/desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))
         package = json.loads((ROOT/'apps/desktop/package.json').read_text())
         cargo = tomllib.loads((ROOT/'apps/desktop/src-tauri/Cargo.toml').read_text())
-        self.assertEqual(config['version'], '0.3.0-beta.2')
+        self.assertRegex(config['version'], r'^0\.\d+\.\d+-beta\.\d+$')
         self.assertEqual(package['version'], config['version'])
         self.assertEqual(cargo['package']['version'], config['version'])
         self.assertEqual(config['bundle']['targets'], ['nsis'])

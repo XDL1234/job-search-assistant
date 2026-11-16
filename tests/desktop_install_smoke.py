@@ -72,6 +72,12 @@ def main():
             page.get_by_role('button',name='导出 Excel',exact=True).click()
             expect(page.get_by_role('status')).to_contain_text('记录已导出',timeout=20000)
             report['worker_export']='passed'
+            page.get_by_role('button',name='设置与帮助',exact=True).click()
+            page.get_by_role('button',name='启动浏览器连接器',exact=True).click()
+            code=page.get_by_role('textbox',name='浏览器连接码')
+            expect(code).to_be_visible(timeout=25000)
+            bridge_port=int(code.input_value().split(':',1)[0])
+            report['packaged_bridge_start']='passed'
             if args.connect:
                 page.get_by_role('button',name='设置与帮助',exact=True).click()
                 page.get_by_role('button',name='连接 Codex',exact=True).click()
@@ -82,6 +88,11 @@ def main():
             deadline=time.monotonic()+75
             while running(pid) and time.monotonic()<deadline:time.sleep(.25)
             assert not running(pid),'关闭后应用仍存活'
+            try:
+                with socket.create_connection(('127.0.0.1',bridge_port),timeout=2):
+                    raise AssertionError('关闭后浏览器连接器仍在监听')
+            except OSError:
+                report['bridge_close']='passed'
             report['close']='passed'
     except Exception as error:
         report['error']=str(error)

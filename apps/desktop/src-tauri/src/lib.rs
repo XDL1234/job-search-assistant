@@ -31,6 +31,7 @@ async fn worker_request(
             | "save_reply_settings"
             | "preview_reply"
             | "browser_status"
+            | "attention_update"
     ) {
         return Err("界面无权调用此操作".into());
     }
@@ -60,6 +61,20 @@ async fn codex_login(
 #[tauri::command]
 async fn browser_connect(state: State<'_, Arc<ExecutorCoordinator>>) -> Result<Value, String> {
     state.browser_connect().await
+}
+#[tauri::command]
+async fn inbox_send(
+    state: State<'_, Arc<ExecutorCoordinator>>,
+    params: Value,
+) -> Result<Value, String> {
+    state.inbox_send(params).await
+}
+#[tauri::command]
+async fn inbox_open(
+    state: State<'_, Arc<ExecutorCoordinator>>,
+    params: Value,
+) -> Result<Value, String> {
+    state.inbox_open(params).await
 }
 #[tauri::command]
 async fn executor_control(
@@ -97,7 +112,9 @@ pub fn run() {
             codex_login,
             executor_control,
             dialog::pick_file,
-            browser_connect
+            browser_connect,
+            inbox_send,
+            inbox_open
         ])
         .on_window_event(lifecycle::on_window_event)
         .run(tauri::generate_context!())

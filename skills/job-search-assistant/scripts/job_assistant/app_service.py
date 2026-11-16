@@ -22,6 +22,10 @@ def handle_app_request(store, request):
                 result['frame'] = Dashboard(store.root).latest_frame(params['run_id'])
             if store.conn.execute("SELECT name FROM sqlite_master WHERE name='app_sessions'").fetchone():
                 result['sessions'] = [dict(row) for row in store.conn.execute('SELECT * FROM app_sessions')]
+            from .boss_messages import read_watch_state
+            result['reply_targets'] = [{'run_id': run['id'], 'conversation': conversation, **item}
+                for run in result['runs'] for conversation, item in read_watch_state(store, run['id']).get('conversations', {}).items()
+                if item.get('attempt_id') and item.get('message_key') and item.get('text')]
         elif method == 'export_records':
             result = {'path': store.export()}
         elif method == 'read_image':
@@ -69,6 +73,59 @@ def handle_app_request(store, request):
         elif method == 'script_step':
             from .boss_script import script_step
             result = script_step(store, params['run_id'])
+        elif method == 'watch_step':
+            from .boss_messages import watch_step
+            result = watch_step(store, params['run_id'])
+        elif method == 'finish_ai_watch':
+            from .boss_messages import finish_ai_watch
+            result = finish_ai_watch(store, params['run_id'])
+        elif method == 'enter_watch':
+            from .app_runs import app_session
+            from .cli import verify_materials
+            app_session(store, params['run_id'])
+            verify_materials(store, params['run_id'])
+            with store.conn:
+                store.conn.execute('BEGIN IMMEDIATE')
+                store.check_run(params['run_id'])
+                store.control(params['run_id'], 'watching')
+            result = {'state': 'watching'}
+        elif method == 'attention_update':
+            result = Dashboard(store.root).attention(store, params)
+        elif method == 'reply_focus':
+            from .app_runs import app_session
+            from .boss_messages import read_watch_state
+            from .boss_script import browser_action
+            from .desktop import desktop_lock
+            run_id = params['run_id']
+            app_session(store, run_id)
+            target = read_watch_state(store, run_id).get('conversations', {}).get(params['conversation'])
+            if not target or target.get('message_key') != params['message_key']:
+                raise ValueError('会话已更新，请重新查看')
+            with desktop_lock(store.root):
+                observation = browser_action(store, run_id, 'open_conversation', conversation=params['conversation'])
+            latest = observation.get('messages', [])[-1:]
+            if (observation.get('conversation') != params['conversation'] or not latest
+                    or latest[0].get('direction') != 'incoming' or latest[0].get('key') != params['message_key']
+                    or latest[0].get('text') != target['text']):
+                raise ValueError('页面会话或最新消息已变化，请等待重新读取后再确认')
+            result = {'matched': True}
+        elif method == 'manual_reply':
+            from .app_runs import app_session
+            from .boss_messages import read_watch_state, send_action
+            from .cli import verify_materials
+            from .desktop import desktop_lock
+            run_id = params['run_id']
+            app_session(store, run_id)
+            verify_materials(store, run_id)
+            target = read_watch_state(store, run_id).get('conversations', {}).get(params['conversation'])
+            if not target or target['message_key'] != params['message_key']:
+                raise ValueError('会话目标已更新或未能绑定本轮申请，请重新查看')
+            with desktop_lock(store.root):
+                action = store.prepare_manual_reply(run_id, target['attempt_id'], params['conversation'],
+                    params['message_key'], params['text'], params.get('confirmed'))
+                result = send_action(store, run_id, action)
+                if result.get('sent') is not True:
+                    raise ValueError('尚未发送；请先打开并核对目标会话后再确认')
         elif method == 'browser_status':
             from .browser_bridge import connection_status
             result=connection_status(store.root)

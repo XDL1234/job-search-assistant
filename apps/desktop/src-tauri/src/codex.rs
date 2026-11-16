@@ -93,6 +93,14 @@ impl TurnGate {
         self.busy = false;
         self.turn_id = None;
     }
+    pub fn finish_for_watch(&mut self) -> bool {
+        if !self.busy || self.cancelled {
+            self.finished();
+            return false;
+        }
+        self.turn_id = None;
+        true
+    }
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;

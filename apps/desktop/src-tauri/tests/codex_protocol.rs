@@ -34,6 +34,24 @@ fn cancel_during_start_is_preserved() {
 }
 
 #[test]
+fn pause_during_ai_completion_cannot_restart_watching() {
+    let mut gate = TurnGate::default();
+    gate.begin().unwrap();
+    gate.started("ai-turn".into());
+    // 模拟等待持久化结果期间用户暂停。
+    gate.cancel();
+    assert!(!gate.finish_for_watch());
+    assert!(gate.is_cancelled());
+    assert!(!gate.busy);
+    assert!(!gate.can_act());
+    gate.begin().unwrap();
+    gate.started("new-turn".into());
+    assert!(gate.finish_for_watch());
+    assert!(gate.busy);
+    assert!(gate.turn_id.is_none());
+}
+
+#[test]
 fn rpc_error_remains_error() {
     let MessageKind::Response(_, data) =
         decode_message(&json!({"id":1,"error":{"code":-1,"message":"failed"}}).to_string())

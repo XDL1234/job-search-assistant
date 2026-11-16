@@ -64,6 +64,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS attention_notes (
           id TEXT PRIMARY KEY, attention_id TEXT REFERENCES attention(id),
           message_key TEXT, text TEXT, created TEXT);
+        CREATE TABLE IF NOT EXISTS manual_sends (
+          action_id TEXT PRIMARY KEY REFERENCES actions(id), payload_hash TEXT NOT NULL, expires REAL NOT NULL);
         ''')
         if 'notified' not in {row[1] for row in self.conn.execute('PRAGMA table_info(attention)')}:
             self.conn.execute('ALTER TABLE attention ADD COLUMN notified INTEGER DEFAULT 0')
@@ -268,7 +270,7 @@ class Store:
             self.conn.execute('BEGIN IMMEDIATE')
             return self._prepare_action(run_id, attempt_id, kind, recipient, dict(payload))
 
-    def _prepare_action(self, run_id, attempt_id, kind, recipient, payload):
+    def _prepare_action(self, run_id, attempt_id, kind, recipient, payload, manual=False):
         if kind not in ('greet', 'submit', 'reply', 'resume'):
             raise ValueError('无效行动类型')
         config = self.check_run(run_id, kind)
@@ -280,7 +282,7 @@ class Store:
         if (kind == 'submit') != (attempt['channel'] == 'web'):
             raise ValueError('行动类型与渠道不符')
         conversation = self.conn.execute('SELECT * FROM conversations WHERE id=?', (recipient,)).fetchone()
-        if conversation and conversation['status'] == 'human':
+        if conversation and conversation['status'] == 'human' and not manual:
             raise ValueError('会话已转人工，请等待用户接管')
         if kind == 'greet':
             used = self.conn.execute("SELECT count(*) FROM actions WHERE run_id=? AND kind='greet' AND status!='not_done'", (run_id,)).fetchone()[0]
@@ -320,6 +322,25 @@ class Store:
                               (identity, run_id, attempt_id, kind, recipient, packed(payload), key, 'pending', None, '', stamp, stamp))
         return identity
 
+    def prepare_manual_reply(self, run_id, attempt_id, conversation, message_key, text, confirmed):
+        if confirmed is not True or not isinstance(text, str) or not text.strip() or len(text) > 4000:
+            raise ValueError('请复核并明确确认发送 1 至 4000 字的回复')
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            state = self.one('conversations', conversation)
+            if state['status'] != 'human' or state['latest_message'] != message_key:
+                raise ValueError('会话未处于人工接管或消息已更新，请重新查看')
+            payload = {'text': text.strip(), 'message_key': message_key}
+            identity = self._prepare_action(run_id, attempt_id, 'reply', conversation, payload, manual=True)
+            self.conn.execute('INSERT INTO manual_sends VALUES (?,?,?)',
+                (identity, hashlib.sha256(packed(payload).encode()).hexdigest(), time.time() + 120))
+        return identity
+
+    def manual_send_allowed(self, action):
+        row = self.conn.execute('SELECT * FROM manual_sends WHERE action_id=?', (action['id'],)).fetchone()
+        return bool(row and row['expires'] > time.time() and action['kind'] == 'reply'
+                    and row['payload_hash'] == hashlib.sha256(action['payload'].encode()).hexdigest())
+
     def claim_action(self, run_id, action_id):
         with self.conn:
             self.conn.execute('BEGIN IMMEDIATE')
@@ -328,6 +349,8 @@ class Store:
                 raise ValueError('行动不属于当前轮次或已执行，先核实结果')
             self.check_run(run_id, action['kind'])
             payload = json.loads(action['payload'])
+            if self.conn.execute('SELECT 1 FROM manual_sends WHERE action_id=?', (action_id,)).fetchone() and not self.manual_send_allowed(action):
+                raise ValueError('人工发送确认已过期或正文已变化，请重新复核')
             if action['kind'] == 'submit':
                 if payload.get('field_fingerprint') != self.field_fingerprint(action['attempt_id']):
                     raise ValueError('填写字段已变化，必须取消未执行行动并重新复核截图')
@@ -336,7 +359,7 @@ class Store:
                     self.check_evidence(field[0], action['attempt_id'])
             if action['kind'] in ('reply', 'resume'):
                 state = self.one('conversations', action['recipient'])
-                if state['status'] == 'human' or state['latest_message'] != payload['message_key']:
+                if (state['status'] == 'human' and not self.manual_send_allowed(action)) or state['latest_message'] != payload['message_key']:
                     raise ValueError('会话转人工或消息已变化，必须重新判断')
             self.conn.execute("UPDATE actions SET status='executing',updated=? WHERE id=?", (now(), action_id))
         return action

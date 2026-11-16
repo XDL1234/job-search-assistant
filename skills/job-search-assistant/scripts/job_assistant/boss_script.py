@@ -1,5 +1,6 @@
 """平台筛选后的确定性步骤；不调用模型、不调用 BOSS 私有接口。"""
 import base64
+import hashlib
 import io
 import json
 import re
@@ -53,7 +54,7 @@ def browser_action(store, run_id, operation, **params):
     store.check_run(run_id)
     if 'boss' not in config['channels']:
         raise ValueError('本轮未授权 BOSS 渠道')
-    if operation in ('greet', 'reply'):
+    if operation in ('greet', 'reply', 'resume'):
         raise ValueError('发送必须使用受控动作入口')
     result = bridge_call(store.root, operation, run_id, **params)
     url = web_url(result['url'])
@@ -141,25 +142,46 @@ def script_step(store, run_id):
             return {'done':False,'message':f"已沟通：{card['company']} · {card['job']}"}
         if state['phase']=='return':
             browser_action(store,run_id,'return')
-            state={'phase':'list'};save()
+            state['phase']='list';save()
             return {'done':False,'message':'已返回原筛选列表'}
-        observation = browser_action(store,run_id,'observe')
-        text = observation.get('text','')
-        blocked = blocking_page(text)
-        if blocked:
-            raise ValueError(blocked)
+        if state['phase']=='done':
+            return {'done':True,'message':state['reason']}
         used = store.conn.execute("SELECT COUNT(*) FROM actions WHERE run_id=? AND kind='greet' AND status!='not_done'", (run_id,)).fetchone()[0]
         if used >= config['max_contacts']:
             return {'done':True,'message':'已达到本轮沟通上限'}
         if store.conn.execute("SELECT 1 FROM actions WHERE run_id=? AND status IN ('pending','executing','uncertain')",(run_id,)).fetchone():
             raise ValueError('存在未决动作，请先核查，禁止重新沟通')
+        operation = 'next' if state['phase']=='next' else 'observe'
+        observation = browser_action(store,run_id,operation)
+        blocked = blocking_page(observation.get('text',''))
+        if blocked:
+            raise ValueError(blocked)
+        filters = observation.get('filters',[])
+        if not isinstance(filters,list) or any(not isinstance(item,str) for item in filters):
+            raise ValueError('无法核对平台当前筛选条件，已停止')
+        if state.get('filters') and filters != state['filters']:
+            raise ValueError('平台城市或筛选条件已变化，已停止；请重新创建任务')
+        if not state.get('filters'):
+            state['filters']=filters
         excluded = {row[0] for row in store.conn.execute("SELECT job_key FROM attempts WHERE channel='boss' AND status IN ('success','uncertain','in_progress','needs_user')")}
         card = choose_card(observation.get('cards',[]), config, excluded)
         if not card:
             if not observation.get('cards'):
                 raise ValueError('未识别岗位卡片，请确认推荐页面已加载或页面选择器是否变化；未发送')
-            return {'done':True,'message':'当前列表没有符合条件的新岗位；未扩大筛选范围'}
+            fingerprint = hashlib.sha256(json.dumps({
+                'keys':sorted(item['key'] for item in observation['cards'] if item.get('key')),
+                'position':observation.get('position'),
+            },sort_keys=True).encode('utf-8')).hexdigest()
+            visited = state.setdefault('visited_pages',[])
+            visited.append(fingerprint)
+            # shortcut: 每次连续扫描最多 64 步；需要更大范围时再增加用户可见的扫描上限。
+            if visited.count(fingerprint)>=3 or len(visited)>=64:
+                state.update(phase='done',reason='列表无新增岗位、出现循环或已达连续扫描上限；未扩大筛选范围')
+                save()
+                return {'done':True,'message':state['reason']}
+            state['phase']='next';save()
+            return {'done':False,'message':'当前列表没有符合条件的新岗位，继续翻页或加载；保持原筛选条件'}
         attempt = store.begin_attempt(run_id,card['company'],card['url'],card['job'],'boss',card['key'])
         store.evidence(attempt,observation['frame']['path'],'pre_submit')
-        state={'phase':'open','card':card,'attempt':attempt};save()
+        state.update(phase='open',card=card,attempt=attempt,visited_pages=[]);save()
         return {'done':False,'message':f"已筛选：{card['company']} · {card['job']}",'attempt_id':attempt}

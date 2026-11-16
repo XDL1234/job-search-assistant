@@ -132,5 +132,8 @@ def bind_session(store, params):
 def execution_context(store, run_id):
     session = app_session(store, run_id)
     config = verify_materials(store, run_id)
-    return {'session': session, 'config': config, 'profile': json.loads(Path(config['profile_path']).read_text(encoding='utf-8')),
+    from .boss_messages import read_watch_state
+    return {'session': session, 'run': {'id': run_id, 'status': store.one('runs', run_id)['status']},
+            'pending_messages': read_watch_state(store, run_id).get('pending_ai'),
+            'config': config, 'profile': json.loads(Path(config['profile_path']).read_text(encoding='utf-8')),
             'skill_path': str(SKILL_ROOT / 'SKILL.md')}
