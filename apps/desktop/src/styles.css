@@ -1,5 +1,96 @@
 @import "tailwindcss";
 
+.form-page {
+  max-width: 1100px;
+}
+.form-page label {
+  display: block;
+  color: #43516a;
+  font-size: 13px;
+  margin-top: 20px;
+}
+.form-page input,
+.form-page select,
+.form-page textarea {
+  width: 100%;
+  background: #fff;
+  border: 1px solid #dfe5ee;
+  border-radius: 7px;
+  padding: 11px;
+  margin-top: 8px;
+  color: #172034;
+}
+.form-page select {
+  display: block;
+  max-width: none;
+}
+.form-page textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 22px;
+}
+.path-input {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+.path-input input {
+  flex: 1;
+  min-width: 0;
+}
+.path-input .button {
+  flex-shrink: 0;
+}
+.form-page details {
+  margin-top: 24px;
+  padding: 15px;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+.form-page summary {
+  cursor: pointer;
+  color: #426090;
+}
+.form-page pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  max-height: 350px;
+  overflow: auto;
+}
+.source-block {
+  border-bottom: 1px solid #e8ecf2;
+  padding: 12px 0;
+}
+.source-block p {
+  white-space: pre-wrap;
+}
+.muted {
+  color: #8190a3;
+  font-size: 12px;
+}
+.form-page .banner {
+  margin-top: 16px;
+}
+.option-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.option-row label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.option-row input {
+  width: auto;
+  margin: 0;
+}
+
 :root {
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
   color: #172034;

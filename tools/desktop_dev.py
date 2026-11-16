@@ -25,6 +25,9 @@ def environment():
     runtime = setup(default_root(), False)
     env.setdefault('JOB_ASSISTANT_PYTHON', runtime['python'] if runtime['ready'] else sys.executable)
     shim = shutil.which('codex.cmd')
+    bundled = ROOT / 'apps/desktop/src-tauri/resources/codex/bin/codex.exe'
+    if bundled.is_file():
+        env.setdefault('JOB_ASSISTANT_CODEX', str(bundled))
     if shim:
         package = Path(shim).parent / 'node_modules/@openai/codex/node_modules'
         matches = list(package.glob('@openai/codex-win32-*/vendor/*/bin/codex.exe'))

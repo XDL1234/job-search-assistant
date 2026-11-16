@@ -18,6 +18,8 @@ def handle_app_request(store, request):
             result = {'platform_supported': os.name == 'nt', 'data_root': str(store.root), 'version': '0.2.0'}
         elif method == 'snapshot':
             result = Dashboard(store.root).snapshot(store)
+            if params.get('run_id'):
+                result['frame'] = Dashboard(store.root).latest_frame(params['run_id'])
             if store.conn.execute("SELECT name FROM sqlite_master WHERE name='app_sessions'").fetchone():
                 result['sessions'] = [dict(row) for row in store.conn.execute('SELECT * FROM app_sessions')]
         elif method == 'export_records':
@@ -25,10 +27,20 @@ def handle_app_request(store, request):
         elif method == 'read_image':
             data = Dashboard(store.root).image(store, params['kind'], params['identity'])
             result = {'url': 'data:image/png;base64,' + base64.b64encode(data).decode('ascii')}
-        elif method in ('preview_demo', 'start_run', 'control_run', 'recover_app', 'bind_session', 'execution_context', 'activate_run', 'open_simulation'):
+        elif method in ('extract_profile', 'save_profile', 'get_profile'):
+            from . import profiles
+            if method == 'extract_profile':
+                result = profiles.extract_profile(params['path'])
+            elif method == 'save_profile':
+                result = profiles.save_profile(store, **params)
+            else:
+                result = profiles.get_profile(store)
+        elif method in ('preview_demo', 'preview_run', 'start_run', 'control_run', 'recover_app', 'bind_session', 'execution_context', 'activate_run', 'open_simulation'):
             from . import app_runs
             if method == 'preview_demo':
                 result = app_runs.preview_demo(store)
+            elif method == 'preview_run':
+                result = app_runs.preview_run(store, params['config'])
             elif method == 'start_run':
                 result = app_runs.start_run(store, params)
             elif method == 'control_run':
@@ -54,6 +66,17 @@ def handle_app_request(store, request):
         elif method == 'executor_action':
             from .app_executor import executor_action
             result = executor_action(store, params['run_id'], params['request'])
+        elif method == 'script_step':
+            from .boss_script import script_step
+            result = script_step(store, params['run_id'])
+        elif method == 'browser_status':
+            from .browser_bridge import connection_status
+            result=connection_status(store.root)
+        elif method in ('get_reply_settings','save_reply_settings','preview_reply'):
+            from . import reply_settings
+            if method=='get_reply_settings':result=reply_settings.read_settings(store)
+            elif method=='save_reply_settings':result=reply_settings.save_settings(store,params['settings'])
+            else:result=reply_settings.preview_reply(store,params)
         else:
             raise ValueError('不支持的应用操作')
         return {'id': identity, 'ok': True, 'result': result}

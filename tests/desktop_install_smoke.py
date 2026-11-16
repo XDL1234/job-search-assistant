@@ -62,7 +62,8 @@ def main():
             browser=playwright.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
             page=browser.contexts[0].pages[0]
             expect(page.get_by_role('heading',name='今天，开始新的机会')).to_be_visible(timeout=30000)
-            expect(page.get_by_text('测试版 0.3.0-beta.1 · 部分功能未开放',exact=True)).to_be_visible()
+            version=json.loads((ROOT/'apps/desktop/package.json').read_text())['version']
+            expect(page.get_by_text(f'测试版 {version} · 开发验证中',exact=True)).to_be_visible()
             expect(page.get_by_text('浏览器界面预览，执行器未连接。')).to_have_count(0)
             expect(page.get_by_text('还没有投递任务',exact=True)).to_be_visible()
             page.screenshot(path=str(folder/'installed-home.png'))

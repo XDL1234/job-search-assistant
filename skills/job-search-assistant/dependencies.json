@@ -2,6 +2,7 @@
   "schema_version": 1,
   "python": ">=3.11",
   "packages": [
+    {"name": "pypdf", "version": "7.1.0"},
     {"name": "PyAutoGUI", "version": "0.9.54"},
     {"name": "Pillow", "version": "11.3.0"},
     {"name": "openpyxl", "version": "3.1.5"},

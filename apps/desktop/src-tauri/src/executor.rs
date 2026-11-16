@@ -14,7 +14,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 use tokio::{
-    process::Command,
+    process::{Child, Command},
     sync::{mpsc, Mutex as AsyncMutex},
 };
 
@@ -39,6 +39,7 @@ pub struct ExecutorCoordinator {
     tool_lock: AsyncMutex<()>,
     seq: AtomicU64,
     epoch: ConnectionEpoch,
+    browser_bridge: AsyncMutex<Option<Child>>,
     pub closing: AtomicBool,
 }
 
@@ -58,11 +59,41 @@ impl ExecutorCoordinator {
             tool_lock: AsyncMutex::new(()),
             seq: 1.into(),
             epoch: ConnectionEpoch::default(),
+            browser_bridge: AsyncMutex::new(None),
             closing: AtomicBool::new(false),
         }
     }
     pub fn status(&self) -> Connection {
         self.connection.lock().unwrap().clone()
+    }
+    pub async fn browser_connect(&self) -> Result<Value, String> {
+        let mut process = self.browser_bridge.lock().await;
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("应用正在关闭".into());
+        }
+        if process
+            .as_mut()
+            .is_none_or(|child| !matches!(child.try_wait(), Ok(None)))
+        {
+            let child = self
+                .worker
+                .command()
+                .arg("browser-bridge")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            *process = Some(child);
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+        let path = self.worker.root.join("browser-bridge.json");
+        let info: Value =
+            serde_json::from_slice(&std::fs::read(path).map_err(|_| "浏览器连接器尚未就绪")?)
+                .map_err(|e| e.to_string())?;
+        Ok(
+            json!({"code":format!("{}:{}",info["port"],info["token"].as_str().unwrap_or("")),"message":"在 Chrome 加载随安装包提供的 browser-extension 文件夹，打开扩展输入连接码。"}),
+        )
     }
     fn set_status(&self, app: &AppHandle, state: &str, message: &str) -> Connection {
         let mut connection = self.connection.lock().unwrap();
@@ -185,7 +216,11 @@ impl ExecutorCoordinator {
 
     pub async fn start(self: &Arc<Self>, app: AppHandle, run: String) -> Result<(), String> {
         let _start = self.start_lock.try_lock().map_err(|_| "正在启动另一任务")?;
-        if self.status().state != "ready" {
+        let context = self
+            .worker
+            .call("execution_context", json!({"run_id":run}))
+            .await?;
+        if context["config"]["execution_mode"] != "script" && self.status().state != "ready" {
             return Err("请先连接 Codex".into());
         }
         {
@@ -210,11 +245,20 @@ impl ExecutorCoordinator {
         Ok(())
     }
     async fn start_inner(&self, app: &AppHandle, run: &str) -> Result<(), String> {
-        let client = self.get_client().await?;
         let context = self
             .worker
             .call("execution_context", json!({"run_id":run}))
             .await?;
+        if context["config"]["simulation"] != true
+            && context["config"]["channels"]
+                .as_array()
+                .is_some_and(|channels| channels.contains(&json!("boss")))
+        {
+            self.browser_connect().await?;
+            if self.worker.call("browser_status",json!({})).await?["connected"] != true {
+                return Err("请先在 Chrome 加载并连接浏览器扩展，再开始任务".into());
+            }
+        }
         self.worker
             .call("control_run", json!({"run_id":run,"action":"running"}))
             .await?;
@@ -226,6 +270,10 @@ impl ExecutorCoordinator {
         self.worker
             .call("activate_run", json!({"run_id":run}))
             .await?;
+        if context["config"]["execution_mode"] == "script" {
+            return self.run_script(app, run).await;
+        }
+        let client = self.get_client().await?;
         let previous = context["session"]["thread_id"].as_str();
         let thread = if let Some(id) = previous {
             client
@@ -237,7 +285,7 @@ impl ExecutorCoordinator {
         } else {
             client.request("thread/start",json!({"cwd":self.worker.root,"sandbox":"read-only","approvalPolicy":"never",
               "developerInstructions":include_str!("runtime-instructions.md"),
-              "dynamicTools":[{"type":"function","name":"job_action","description":"求职助手已授权的模拟执行工具。request 是包含 operation 与参数的 JSON 字符串；capture/act 返回实际截图。只能用于当前模拟轮次，不能修改授权或恢复人工会话。","inputSchema":{"type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}}]})).await?
+              "dynamicTools":[{"type":"function","name":"job_action","description":"求职助手当前轮次的执行工具。request 包含 operation 与参数；浏览器操作使用 browser，桌面操作使用 capture/act。不能修改授权或恢复人工会话。","inputSchema":{"type":"object","properties":{"request":{"type":"string"}},"required":["request"],"additionalProperties":false}}]})).await?
         };
         let thread_id = thread["thread"]["id"]
             .as_str()
@@ -259,7 +307,7 @@ impl ExecutorCoordinator {
         if self.cancelled(run) {
             return Err("任务已暂停".into());
         }
-        let text=format!("使用 $job-search-assistant 完成本轮已确认的本地模拟任务。应用已完成依赖与授权，不需要再次初始化。仅使用 job_action 工具，不调用 shell、其他技能或网站。配置与个人资料：{}。先调用 bind（窗口标题由工具固定），capture 查看画面。优先 status 核对已执行步骤，结果不明不得重复提交。按照运行指令完成一次网申与一次模拟沟通，面试转人工，然后结束回合。",context);
+        let text=format!("使用 $job-search-assistant 完成本轮已确认任务。应用已准备依赖与授权，仅使用 job_action。配置与资料：{}。先 status 核查未决动作；simulation=true 按模拟流程。真实 BOSS 优先 browser action=observe 读取当前标签页，按 employment_type 和 boss_mode 筛选。官网仅操作 company_rows 授权网站，逐字段留截图。到上限或页面受限就停止，面试整条转人工。不要创造额外要求或话术。",context);
         let result=client.request("turn/start",json!({"threadId":thread_id,"input":[{"type":"skill","name":"job-search-assistant","path":context["skill_path"]},{"type":"text","text":text}]})).await?;
         let turn = result["turn"]["id"]
             .as_str()
@@ -281,6 +329,56 @@ impl ExecutorCoordinator {
                 )
                 .await;
         }
+        Ok(())
+    }
+    async fn run_script(&self, app: &AppHandle, run: &str) -> Result<(), String> {
+        self.worker
+            .call(
+                "bind_session",
+                json!({"run_id":run,"state":"running","thread_id":null}),
+            )
+            .await?;
+        loop {
+            if self.cancelled(run) {
+                return Err("任务已暂停".into());
+            }
+            let result = {
+                let _tool = self.tool_lock.lock().await;
+                if self.cancelled(run) {
+                    return Err("任务已暂停".into());
+                }
+                self.worker
+                    .call("script_step", json!({"run_id":run}))
+                    .await?
+            };
+            self.emit(
+                app,
+                run,
+                "message",
+                json!({"text":format!("{}\n",result["message"].as_str().unwrap_or("已处理一步"))}),
+            );
+            if result["done"] == true {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+        self.worker.pause(run).await?;
+        self.worker
+            .call(
+                "bind_session",
+                json!({"run_id":run,"state":"idle","thread_id":null}),
+            )
+            .await?;
+        if let Some(active) = self
+            .active
+            .lock()
+            .unwrap()
+            .as_mut()
+            .filter(|a| a.run == run)
+        {
+            active.gate.finished();
+        }
+        self.emit(app, run, "state", json!({"state":"completed"}));
         Ok(())
     }
     pub async fn control(&self, app: &AppHandle, run: &str, action: &str) -> Result<(), String> {
@@ -511,6 +609,9 @@ impl ExecutorCoordinator {
         }
         let _ = tokio::time::timeout(Duration::from_secs(46), self.tool_lock.lock()).await;
         let _ = self.worker.call("recover_app", json!({})).await;
+        if let Some(mut bridge) = self.browser_bridge.lock().await.take() {
+            let _ = bridge.kill().await;
+        }
     }
 }
 

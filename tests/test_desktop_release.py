@@ -24,7 +24,7 @@ class DesktopReleaseTests(unittest.TestCase):
         config = json.loads((ROOT/'apps/desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))
         package = json.loads((ROOT/'apps/desktop/package.json').read_text())
         cargo = tomllib.loads((ROOT/'apps/desktop/src-tauri/Cargo.toml').read_text())
-        self.assertEqual(config['version'], '0.3.0-beta.1')
+        self.assertEqual(config['version'], '0.3.0-beta.2')
         self.assertEqual(package['version'], config['version'])
         self.assertEqual(cargo['package']['version'], config['version'])
         self.assertEqual(config['bundle']['targets'], ['nsis'])
@@ -40,6 +40,17 @@ class DesktopReleaseTests(unittest.TestCase):
             (folder/'auth.json').write_text('{}')
             with self.assertRaises(ValueError):
                 module.resource_manifest(folder)
+
+    def test_build_only_clears_known_generated_directories(self):
+        from unittest.mock import patch
+        spec=importlib.util.spec_from_file_location('desktop_build',ROOT/'tools/build_desktop.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);(folder/'worker').mkdir();(folder/'worker/stale').write_text('old')
+            (folder/'keep.txt').write_text('keep')
+            with patch.object(module,'RESOURCES',folder):module.clear_generated_resources()
+            self.assertFalse((folder/'worker').exists())
+            self.assertTrue((folder/'keep.txt').exists())
 
 
 if __name__ == '__main__':

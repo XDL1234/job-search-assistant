@@ -9,6 +9,7 @@
 | 桌面产品与架构 | 已记录确认选项与实现边界 | [设计说明](design/app-ui-v1/desktop-spec.md) |
 | Codex 接入 | 已完成模拟数据协议探针 | [验证报告](design/app-ui-v1/codex-probe.md) |
 | 桌面应用实现 | v0.3.0-beta.1 测试版安装包；真实操作验收后置 | [安装说明](releases/v0.3.0-beta.1.md)、[构建发布](desktop-packaging.md) |
+| 后台开发迭代 | beta.2 源码：资料与任务配置、浏览器连接器；真实后台发送未验收 | [后台说明](background-browser.md)、[迭代计划](superpowers/plans/2026-11-16-live-job-search.md) |
 | 发布历史 | v0.2.0 Skill 与 v0.3.0-beta.1 桌面测试版分别记录 | [变更记录](../CHANGELOG.md) |
 
 ## 维护约定

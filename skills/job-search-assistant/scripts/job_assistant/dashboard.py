@@ -99,14 +99,16 @@ class Dashboard:
         data['data_root'] = str(self.root)
         return data
 
-    def latest_frame(self):
+    def latest_frame(self, run_id=None):
         directory = self.root / 'frames'
         for path in sorted(directory.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
             if not ID.fullmatch(path.stem) or path.is_symlink() or not path.with_suffix('.png').is_file():
                 continue
             try:
                 data = json.loads(path.read_text(encoding='utf-8'))
-                return {'id': path.stem, 'captured_at': data['captured_at'], 'title': data['window']['title']}
+                if run_id and data.get('run_id') != run_id:
+                    continue
+                return {'id': path.stem, 'captured_at': data['captured_at'], 'title': data['window']['title'], 'run_id':data.get('run_id')}
             except (ValueError, KeyError, OSError):
                 continue
         return None

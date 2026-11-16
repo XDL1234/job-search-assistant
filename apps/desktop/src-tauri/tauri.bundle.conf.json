@@ -5,6 +5,7 @@
       "resources/worker/": "runtime/worker/",
       "resources/codex/": "runtime/codex/",
       "resources/licenses/": "licenses/",
+      "resources/browser-extension/": "browser-extension/",
       "resources/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
       "resources/resource-manifest.json": "resource-manifest.json"
     }

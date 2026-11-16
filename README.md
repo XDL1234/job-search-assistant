@@ -12,9 +12,12 @@ Windows 求职辅助项目，提供桌面应用测试版及 Codex Skill / 插件
 - [八页界面稿与设计说明](https://github.com/XDL1234/job-search-assistant/blob/main/docs/design/app-ui-v1/README.md)
 - [桌面应用实施计划](https://github.com/XDL1234/job-search-assistant/blob/main/docs/superpowers/plans/2026-10-06-desktop-app-v1.md)
 - [桌面开发预览与验证状态](docs/desktop-development.md)
+- [后台浏览器连接与开发进度](docs/background-browser.md)
 - [变更记录](https://github.com/XDL1234/job-search-assistant/blob/main/CHANGELOG.md)
 
-桌面应用采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。当前只开放虚构资料的本地模拟入口；真实投递配置、人工确认发送、PDF/Word 资料解析仍在后续计划中。
+桌面应用采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。已发布的 beta.1 仅开放本地模拟入口；源码迭代的新增能力见下方说明，人工确认发送仍在后续计划中。
+
+当前源码已迭代至 `0.3.0-beta.2`：新增真实资料导入、三种求职类型、三种 BOSS 模式、官网公司表配置、回复规则和后台浏览器连接器。新通路尚未在用户账号完成真实投递验收，具体以 [beta.2 说明](docs/releases/v0.3.0-beta.2.md)为准；上方 beta.1 链接仍对应已发布的旧版，不把新源码能力等同旧版已支持。
 
 ## 单独安装 Skill（开发者与既有用户）
 

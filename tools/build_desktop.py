@@ -38,6 +38,15 @@ def resource_manifest(directory):
     return files
 
 
+def clear_generated_resources():
+    for name in ('worker','codex','licenses','browser-extension'):
+        path=RESOURCES/name
+        if path.is_symlink() or path.resolve().parent != RESOURCES.resolve():
+            raise ValueError('构建输出指向资源目录之外，拒绝清理')
+        if path.is_dir():
+            shutil.rmtree(path)
+
+
 def run(args, **kwargs):
     print('运行：' + ' '.join(str(a) for a in args[:5]), flush=True)
     subprocess.run([str(a) for a in args], check=True, **kwargs)
@@ -81,7 +90,7 @@ for d in m.distributions():
     return RESOURCES/'worker/worker.exe'
 
 
-def copy_codex(env):
+def copy_codex(env, target=None):
     exe = Path(env.get('JOB_ASSISTANT_CODEX', ''))
     if not exe.is_file():
         raise ValueError('请通过 JOB_ASSISTANT_CODEX 指定官方 Codex 0.156.1 Windows x64 发行版中的 bin/codex.exe')
@@ -89,11 +98,11 @@ def copy_codex(env):
     if version != 'codex-cli ' + CODEX_VERSION:
         raise ValueError('Codex 版本不符：' + version)
     vendor = exe.parent.parent
-    package = vendor.parent.parent/'package.json'
+    package = vendor/'package.json' if (vendor/'package.json').exists() else vendor.parent.parent/'package.json'
     metadata = json.loads(package.read_text(encoding='utf-8'))
     if metadata.get('license') != 'Apache-2.0' or not metadata['version'].startswith(CODEX_VERSION):
         raise ValueError('Codex 官方包元数据不符')
-    target = RESOURCES/'codex'
+    target = target or RESOURCES/'codex'
     target.mkdir(parents=True, exist_ok=True)
     for path in vendor.rglob('*'):
         if path.is_symlink():
@@ -149,9 +158,15 @@ def main():
     if RESOURCES.is_symlink() or RESOURCES.resolve().parent != TAURI.resolve():
         raise ValueError('不安全的构建资源目录')
     if not args.reuse_resources:
+        cached_codex=BUILD/'codex-source'/CODEX_VERSION
+        if not (cached_codex/'bin/codex.exe').is_file():
+            copy_codex(env,cached_codex)
+        env['JOB_ASSISTANT_CODEX']=str(cached_codex/'bin/codex.exe')
+        clear_generated_resources()
         build_worker(env)
         copy_codex(env)
         collect_notices(env)
+        shutil.copytree(ROOT/'apps/browser-extension', RESOURCES/'browser-extension', dirs_exist_ok=True)
         (RESOURCES/'THIRD-PARTY-NOTICES.txt').write_text(
             '求职助手测试版包含：Python（PSF）、PyInstaller bootloader（GPL exception）、'
             'PyAutoGUI/Pillow/openpyxl 等依赖（许可证见 runtime/worker/_internal/skill/third-party-licenses）；'

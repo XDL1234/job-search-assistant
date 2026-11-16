@@ -6,7 +6,30 @@ export type UiMethod =
   | "preview_demo"
   | "start_run"
   | "control_run"
-  | "open_simulation";
+  | "open_simulation"
+  | "extract_profile"
+  | "save_profile"
+  | "get_profile"
+  | "preview_run"
+  | "get_reply_settings"
+  | "save_reply_settings"
+  | "preview_reply"
+  | "browser_status";
+export interface TaskConfig {
+  channels: string[];
+  target_roles: string[];
+  employment_type: string;
+  boss_mode?: string;
+  execution_mode: string;
+  max_contacts: number;
+  filters: string;
+  window_title: string;
+  company_table?: string;
+  company_rows?: { company: string; url: string; source_row: number }[];
+  resume_path?: string;
+  profile_version?: string;
+}
+// UI 白名单在原生端同步核验。
 export interface WorkerResponse<T> {
   id: string;
   ok: boolean;
@@ -17,7 +40,13 @@ export interface Run {
   id: string;
   status: string;
   created: string;
-  config: { target_roles: string[]; channels: string[]; simulation?: boolean };
+  config: {
+    target_roles: string[];
+    channels: string[];
+    simulation?: boolean;
+    execution_mode?: string;
+    employment_type?: string;
+  };
 }
 export interface Attempt {
   id: string;

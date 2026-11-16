@@ -1,7 +1,10 @@
 //! 使用参数数组启动 Python，不把 UI 文本拼接为命令。
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{path::{Path, PathBuf}, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::process::Command;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -26,6 +29,19 @@ pub fn installed_worker(resources: &Path) -> Option<PathBuf> {
 }
 
 impl WorkerClient {
+    pub fn command(&self) -> Command {
+        let mut command = if let Some(executable) = &self.executable {
+            Command::new(executable)
+        } else {
+            let mut c = Command::new(&self.python);
+            c.arg("-X").arg("utf8").arg(&self.script);
+            c
+        };
+        command.arg("--root").arg(&self.root).kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        command
+    }
     pub fn from_environment(resources: &Path) -> Result<Self, String> {
         let repo = std::env::var_os("JOB_ASSISTANT_REPO")
             .map(PathBuf::from)
@@ -37,15 +53,18 @@ impl WorkerClient {
                     .join(".job-search-assistant/desktop")
             });
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        let executable = std::env::var_os("JOB_ASSISTANT_WORKER").map(PathBuf::from)
+        let executable = std::env::var_os("JOB_ASSISTANT_WORKER")
+            .map(PathBuf::from)
             .or_else(|| installed_worker(resources));
         if !cfg!(debug_assertions) && executable.is_none() {
             return Err("安装文件不完整：缺少内置执行器，请重新安装测试版".into());
         }
-        let codex = std::env::var_os("JOB_ASSISTANT_CODEX").map(PathBuf::from).or_else(|| {
-            let path = resources.join("runtime/codex/bin/codex.exe");
-            path.is_file().then_some(path)
-        });
+        let codex = std::env::var_os("JOB_ASSISTANT_CODEX")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let path = resources.join("runtime/codex/bin/codex.exe");
+                path.is_file().then_some(path)
+            });
         Ok(Self {
             root,
             python: std::env::var_os("JOB_ASSISTANT_PYTHON")
@@ -65,16 +84,8 @@ impl WorkerClient {
             serde_json::to_vec(&request).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let mut command = if let Some(executable) = &self.executable {
-            Command::new(executable)
-        } else {
-            let mut c = Command::new(&self.python);
-            c.arg("-X").arg("utf8").arg(&self.script);
-            c
-        };
+        let mut command = self.command();
         command
-            .arg("--root")
-            .arg(&self.root)
             .arg("app-request")
             .arg("--file")
             .arg(&path)

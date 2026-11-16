@@ -68,9 +68,12 @@ def read_companies(path, columns=None, sheet=None):
 
 
 def validate_config(config):
+    if 'employment_type' in config and config['employment_type'] not in ('internship', 'campus', 'full_time'):
+        raise ValueError('求职类型不支持')
     if not config.get('channels') or not set(config['channels']) <= {'web', 'boss'}:
         raise ValueError('channels 必须包含 web 或 boss')
-    if not config.get('target_roles'):
+    if (not isinstance(config.get('target_roles'),list) or not config['target_roles']
+            or any(not isinstance(role,str) or not role.strip() for role in config['target_roles'])):
         raise ValueError('必须明确目标岗位名称及方向')
     if 'boss' in config['channels']:
         if config.get('boss_mode') not in ('filtered', 'screened'):

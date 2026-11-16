@@ -1,4 +1,5 @@
 pub mod codex;
+mod dialog;
 pub mod executor;
 mod lifecycle;
 pub mod worker;
@@ -22,6 +23,14 @@ async fn worker_request(
             | "preview_demo"
             | "start_run"
             | "open_simulation"
+            | "extract_profile"
+            | "save_profile"
+            | "get_profile"
+            | "preview_run"
+            | "get_reply_settings"
+            | "save_reply_settings"
+            | "preview_reply"
+            | "browser_status"
     ) {
         return Err("界面无权调用此操作".into());
     }
@@ -49,6 +58,10 @@ async fn codex_login(
     state.login(&app).await
 }
 #[tauri::command]
+async fn browser_connect(state: State<'_, Arc<ExecutorCoordinator>>) -> Result<Value, String> {
+    state.browser_connect().await
+}
+#[tauri::command]
 async fn executor_control(
     app: AppHandle,
     state: State<'_, Arc<ExecutorCoordinator>>,
@@ -70,7 +83,8 @@ pub fn run() {
             }
         }))
         .setup(|app| {
-            let worker = WorkerClient::from_environment(&app.path().resource_dir()?).map_err(std::io::Error::other)?;
+            let worker = WorkerClient::from_environment(&app.path().resource_dir()?)
+                .map_err(std::io::Error::other)?;
             tauri::async_runtime::block_on(worker.call("recover_app", json!({})))
                 .map_err(std::io::Error::other)?;
             app.manage(Arc::new(ExecutorCoordinator::new(worker)));
@@ -81,7 +95,9 @@ pub fn run() {
             codex_status,
             codex_connect,
             codex_login,
-            executor_control
+            executor_control,
+            dialog::pick_file,
+            browser_connect
         ])
         .on_window_event(lifecycle::on_window_event)
         .run(tauri::generate_context!())

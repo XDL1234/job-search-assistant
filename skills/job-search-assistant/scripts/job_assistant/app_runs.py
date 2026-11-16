@@ -11,6 +11,44 @@ from .panel_state import queue_control
 from .store import packed
 
 
+def preview_run(store, value):
+    if not isinstance(value,dict):
+        raise ValueError('任务配置必须为对象')
+    from .profiles import get_profile
+    from .inputs import digest_file
+    profile = get_profile(store)
+    if not profile:
+        raise ValueError('请先导入并保存简历和个人资料')
+    if digest_file(profile['resume_path']) != profile['resume_sha256']:
+        raise ValueError('简历附件已变化，请重新核对保存资料')
+    allowed = {'channels', 'target_roles', 'employment_type', 'boss_mode', 'execution_mode', 'max_contacts',
+               'filters', 'cities', 'keywords', 'exclude_keywords', 'company_table', 'companies', 'columns', 'sheet',
+               'unknown_reply_mode', 'rules', 'window_title', 'poll_seconds'}
+    config = {key: val for key, val in value.items() if key in allowed}
+    if config.get('employment_type') not in ('internship', 'campus', 'full_time'):
+        raise ValueError('请选择实习、校招或正式工作')
+    if config.get('execution_mode') not in ('script', 'ai'):
+        raise ValueError('请选择脚本执行或 AI 执行')
+    if config['execution_mode'] == 'script' and (config.get('channels') != ['boss'] or config.get('boss_mode') != 'filtered'):
+        raise ValueError('脚本模式用于 BOSS 平台筛选结果；AI 精筛与官网填写请选择 AI 执行')
+    if config['execution_mode']=='script' and config.get('filters','') not in ('','沿用当前 BOSS 筛选','沿用当前 BOSS 筛选条件','沿用当前 BOSS 城市和筛选条件'):
+        raise ValueError('脚本模式沿用平台当前筛选；自然语言补充条件请改用 AI 模式或先在 BOSS 设置')
+    if not isinstance(config.get('window_title'),str) or not config['window_title'].strip():
+        raise ValueError('请填写目标浏览器窗口标题')
+    config.update({'profile_path': profile['profile_path'], 'resume_path': profile['resume_path'],
+                   'profile_version': profile['version_id'], 'simulation': False})
+    from .reply_settings import read_settings
+    settings = read_settings(store)
+    config['rules'] = settings['rules']
+    config['unknown_reply_mode'] = settings['unknown_reply_mode']
+    config = prepare_config(config)
+    migrate_app(store)
+    ticket = uuid.uuid4().hex
+    with store.conn:
+        store.conn.execute('INSERT INTO app_previews VALUES (?,?,?)', (ticket, packed(config), time.time()+600))
+    return {'ticket': ticket, 'config': config}
+
+
 def preview_demo(store):
     migrate_app(store)
     ticket = uuid.uuid4().hex
@@ -50,7 +88,7 @@ def start_run(store, params):
         store.conn.execute('DELETE FROM app_previews WHERE ticket=?', (params['ticket'],))
         run = uuid.uuid4().hex
         from .store import now
-        store.conn.execute('INSERT INTO runs VALUES (?,?,?,?,?)', (run, packed(config), '用户在桌面应用确认本地模拟任务', 'paused', now()))
+        store.conn.execute('INSERT INTO runs VALUES (?,?,?,?,?)', (run, packed(config), '用户在桌面应用确认本轮任务范围和材料', 'paused', now()))
         store.conn.execute('INSERT INTO app_sessions (run_id) VALUES (?)', (run,))
     return {'run_id': run}
 

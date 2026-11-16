@@ -6,7 +6,6 @@ import {
   Bell,
   BriefcaseBusiness,
   Check,
-  CircleHelp,
   Clock3,
   FileText,
   FolderOpen,
@@ -29,6 +28,10 @@ import {
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { native, request } from "./bridge";
+import packageInfo from "../package.json";
+import { Profile } from "./pages/Profile";
+import { TaskSetup } from "./pages/TaskSetup";
+import { Replies } from "./pages/Replies";
 import type { Connection, ExecutorEvent, Snapshot } from "./contracts";
 
 const navigation = [
@@ -88,14 +91,15 @@ export default function App() {
   );
   const [search, setSearch] = useState("");
   const [detail, setDetail] = useState("");
+  const [browserCode, setBrowserCode] = useState("");
   const refresh = useCallback(async () => {
     if (!isTauri()) return;
     try {
-      setSnapshot(await request<Snapshot>("snapshot"));
+      setSnapshot(await request<Snapshot>("snapshot", { run_id: runId }));
     } catch (e) {
       setError(String(e));
     }
-  }, []);
+  }, [runId]);
   useEffect(() => {
     void refresh();
     if (!isTauri()) return;
@@ -189,9 +193,12 @@ export default function App() {
     perform(async () => {
       await native("executor_control", { runId, action });
       if (action === "running")
-        setNotice("5 秒后开始，请将本轮模拟浏览器置于前台。");
+        setNotice(
+          "任务正在启动。BOSS 浏览器扩展可操作后台标签页；官网和桌面模式请保持目标浏览器在前台。",
+        );
     });
   const run = snapshot.runs.find((r) => r.id === runId);
+  const scriptMode = run?.config.execution_mode === "script";
   const sessionError = snapshot.sessions?.find(
     (s) => s.run_id === runId,
   )?.error;
@@ -257,7 +264,9 @@ export default function App() {
         <div className="topline">
           <span>我的求职空间</span>
           <div>
-            <span className="pill">测试版 0.3.0-beta.1 · 部分功能未开放</span>
+            <span className="pill">
+              测试版 {packageInfo.version} · 开发验证中
+            </span>
             <span
               className={`dot ${connection.state === "ready" ? "online" : ""}`}
             />
@@ -517,7 +526,7 @@ export default function App() {
                   busy ||
                   !run ||
                   run.status === "stopped" ||
-                  connection.state !== "ready"
+                  (!scriptMode && connection.state !== "ready")
                 }
                 onClick={() => void control("running")}
               >
@@ -560,12 +569,14 @@ export default function App() {
                   disabled={busy || !run}
                   onClick={() =>
                     void perform(async () => {
-                      await request("open_simulation", { run_id: runId });
+                      if (run?.config.simulation)
+                        await request("open_simulation", { run_id: runId });
+                      else setPage("settings");
                     })
                   }
                 >
                   <FolderOpen size={16} />
-                  打开模拟浏览器
+                  {run?.config.simulation ? "打开模拟浏览器" : "浏览器连接设置"}
                 </Button>
               </section>
               <section className="card screen">
@@ -591,7 +602,8 @@ export default function App() {
                     <Monitor size={40} />
                     <strong>浏览器准备好后开始任务</strong>
                     <p>
-                      开始后请将模拟浏览器放到前台。需要使用电脑时，先暂停接管。
+                      BOSS
+                      扩展可操作后台标签页；官网和桌面模式请保持目标浏览器在前台。
                     </p>
                   </div>
                 )}
@@ -748,10 +760,47 @@ export default function App() {
               </Button>
             </div>
             <hr />
+            <h2>浏览器后台连接</h2>
+            <p>
+              加载安装目录中的 browser-extension
+              文件夹后，将下方连接码粘贴到扩展。脚本投递不调用
+              AI，标签页可在后台运行。
+            </p>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() =>
+                void perform(async () => {
+                  const result = await native<{ code: string }>(
+                    "browser_connect",
+                  );
+                  setBrowserCode(result.code);
+                })
+              }
+            >
+              启动浏览器连接器
+            </Button>
+            {browserCode && (
+              <label className="source-block">
+                连接码（仅保存在本机）
+                <input
+                  aria-label="浏览器连接码"
+                  readOnly
+                  value={browserCode}
+                  onFocus={(e) => e.target.select()}
+                  style={{ width: "100%", padding: 12, marginTop: 10 }}
+                />
+              </label>
+            )}
+            <p>
+              首次加载扩展需在 Chrome
+              的扩展管理中确认。应用退出或电脑休眠后不会继续投递。
+            </p>
+            <hr />
             <h2>关于当前版本</h2>
             <p>
-              当前先开放本地模拟任务，使用虚构资料。真实公司网申与 BOSS
-              投递尚未在桌面应用中开放。
+              当前开发版支持资料导入、实习/校招/正式工作配置、BOSS 脚本与 AI
+              模式以及官网公司表。真实页面兼容性以实测记录为准，网申实测待后续进行。
             </p>
             <p>
               截图和台账保存在本地；AI 分析会将所需资料和截图发送到模型服务。
@@ -759,28 +808,19 @@ export default function App() {
             <p>退出应用将暂停任务，下次启动需手动恢复。</p>
           </section>
         )}
-        {["profile", "companies", "boss", "replies"].includes(page) && (
-          <section className="card">
-            <div className="empty stage-empty">
-              <CircleHelp size={36} />
-              <h2>{title} · 尚未开放</h2>
-              <p>本阶段先验证应用内执行与接管。该页面将按已确认设计接入。</p>
-              <div className="actions">
-                <Button onClick={() => setPage("running")}>
-                  前往执行工作台
-                  <ArrowRight size={16} />
-                </Button>
-                <Button
-                  variant="secondary"
-                  disabled={busy || !isTauri()}
-                  onClick={() => void demo()}
-                >
-                  体验本地模拟
-                </Button>
-              </div>
-            </div>
-          </section>
+        {page === "profile" && <Profile onSaved={() => void refresh()} />}
+        {(page === "boss" || page === "companies") && (
+          <TaskSetup
+            key={page}
+            channel={page === "boss" ? "boss" : "web"}
+            onCreated={(id) => {
+              setRunId(id);
+              setPage("running");
+              void refresh();
+            }}
+          />
         )}
+        {page === "replies" && <Replies />}
       </main>
       {preview && (
         <div className="modal-backdrop">

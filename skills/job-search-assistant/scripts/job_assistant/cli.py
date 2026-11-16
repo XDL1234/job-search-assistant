@@ -18,6 +18,8 @@ def verify_materials(store, run_id):
         path = Path(config[label + '_path'])
         if not path.is_file() or digest_file(path) != config[label + '_sha256']:
             raise ValueError(f'{label} 资料已变更或丢失；请重新确认本轮材料')
+    if config.get('company_table_sha256') and digest_file(config['company_table']) != config['company_table_sha256']:
+        raise ValueError('公司表已变更，请重新确认本轮范围')
     return config
 
 
@@ -32,6 +34,8 @@ def prepare_config(value):
     if not isinstance(load_json(config['profile_path']), dict):
         raise ValueError('个人资料需先归一化为 JSON 对象')
     if 'web' in config['channels']:
+        config['company_table'] = str(Path(config['company_table']).resolve(strict=True))
+        config['company_table_sha256'] = digest_file(config['company_table'])
         companies = read_companies(config['company_table'], config.get('columns'), config.get('sheet'))
         selected = config.get('companies') or [r['company'] for r in companies]
         if not set(selected) <= {r['company'] for r in companies}:
@@ -213,6 +217,7 @@ def main(argv=None):
     install = commands.add_parser('install', help='将自包含 Skill 安装到用户目录，不覆盖已有不同版本')
     install.add_argument('--destination', type=Path, default=Path.home() / '.agents/skills/job-search-assistant')
     commands.add_parser('doctor', help='验证依赖、数据库及 Excel 写入，不移动鼠标')
+    commands.add_parser('browser-bridge', help='启动应用与浏览器扩展的本机桥接')
     dashboard = commands.add_parser('dashboard', help='启动仅本机可访问的可视化面板，不启动投递执行器')
     dashboard.add_argument('--port', type=int, default=0, help='默认自动分配空闲端口')
     dashboard.add_argument('--open', action='store_true', help='打开浏览器面板')
@@ -223,6 +228,10 @@ def main(argv=None):
         if args.command == 'dashboard':
             from .dashboard import serve
             serve(args.root, args.port, args.open)
+            return 0
+        if args.command == 'browser-bridge':
+            from .browser_bridge import serve
+            serve(args.root)
             return 0
         if args.command == 'bootstrap':
             result = setup(args.root, args.install)
