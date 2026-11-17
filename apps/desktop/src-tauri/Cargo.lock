@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "job-search-desktop"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 dependencies = [
  "serde",
  "serde_json",

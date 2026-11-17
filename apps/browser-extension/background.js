@@ -56,11 +56,20 @@ async function pageCommand(tabId, command) {
   return chrome.tabs.sendMessage(tabId,{...command,type:'job-command'});
 }
 async function navigate(tabId,url) {
+  const expected=new URL(url);
+  if(!origins.has(expected.origin)) throw new Error('导航目标不在允许范围');
+  expected.searchParams.sort();
   await chrome.tabs.update(tabId,{url});
-  for(let i=0;i<20;i++) {
+  for(let i=0;i<40;i++) {
     await new Promise(resolve=>setTimeout(resolve,300));
     const tab=await chrome.tabs.get(tabId);
-    if(tab.status==='complete' && tab.url===url) return;
+    if(tab.status==='complete' && tab.url) {
+      const actual=new URL(tab.url);
+      actual.searchParams.sort();
+      if(actual.origin===expected.origin && actual.pathname===expected.pathname &&
+          (expected.pathname.startsWith('/job_detail/') ||
+           (actual.search===expected.search && actual.hash===expected.hash))) return;
+    }
   }
   throw new Error('页面未完成加载，请稍后核查');
 }

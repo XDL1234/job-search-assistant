@@ -85,16 +85,20 @@
         const url = new URL(link.href, location.href);
         if (url.origin !== location.origin || seen.has(url.pathname)) return [];
         seen.add(url.pathname);
+        const companyFooter = one(card, ".job-card-footer .boss-info .boss-logo");
+        const footerCompany = companyFooter
+          ? text(one(card, ".job-card-footer .boss-info .boss-name"))
+          : "";
         return [
           {
             key: url.pathname,
             url: url.href,
-            job: text(one(card, ".job-name,.job-title")) || text(link),
+            job: text(one(card, ".job-name")) || text(one(card, ".job-title")).split(/\r?\n/)[0].trim() || text(link),
             company: text(
               one(card, ".company-name,.company-info a,.company-name a"),
-            ),
-            recruiter: text(one(card, ".boss-name,.info-public")),
-            tags: text(one(card, ".tag-list,.job-info,.job-card-footer")),
+            ) || footerCompany,
+            recruiter: companyFooter ? "" : text(one(card, ".boss-name,.info-public")),
+            tags: text(one(card, ".tag-list")) || text(one(card, ".job-info,.job-card-footer")),
             contacted: /继续沟通|已沟通/.test(text(card)),
             _element: card,
           },
@@ -146,7 +150,14 @@
   }
   async function execute(command) {
     guard();
-    if (command.operation === "observe") return snapshot();
+    if (command.operation === "observe") {
+      const result = snapshot();
+      if (command.diagnostics) result.card_structure = cards().slice(0, 1).map(({_element}) =>
+        Array.from(_element.querySelectorAll('*')).slice(0, 70).map(node => ({
+          tag: node.tagName, class: String(node.className || ''), text: text(node).slice(0, 120),
+        })));
+      return result;
+    }
     if (command.operation === "open_job") {
       const card = cards().find((card) => card.key === command.key);
       if (!card) throw new Error("岗位不在当前列表，请重新观察");
@@ -202,17 +213,26 @@
         return { sent: false, already_contacted: true, ...snapshot() };
       const button = exactButton(/^(立即沟通|立即开聊|打招呼)$/);
       const before=text(button);
+      const actionRegion=button.closest?.('.job-op,.job-banner');
       await lease(command);
       button.click();
-      await sleep(1100);
-      guard();
-      if (expected.pathname!==location.pathname) throw new Error('沟通后页面已切换，请核查回执');
-      const sent = /^(立即沟通|立即开聊|打招呼)$/.test(before) &&
-        /继续沟通|已沟通/.test(text(document.querySelector('.job-banner,.job-op,.job-detail')));
-      return { sent, uncertain: !sent, ...snapshot() };
+      for(let i=0;i<20;i++) {
+        await sleep(400);
+        await lease(command);
+        if (expected.origin!==location.origin || expected.pathname!==location.pathname)
+          throw new Error('沟通后页面已切换，请核查回执');
+        const buttons=actionRegion?Array.from(actionRegion.querySelectorAll('button,a,[role="button"]')):[button];
+        const sent=/^(立即沟通|立即开聊|打招呼)$/.test(before) &&
+          buttons.filter(node=>shown(node) && /^(继续沟通|已沟通)$/.test(text(node))).length===1;
+        if(sent) return {sent:true,uncertain:false,...snapshot()};
+      }
+      return {sent:false,uncertain:true,...snapshot()};
     }
     if (command.operation === "messages") {
-      return {...snapshot(),...chatSnapshot()};
+      const chat=chatSnapshot();
+      if(!chat.conversations.length)
+        throw new Error('未能识别可核对的 BOSS 聊天列表，自动回复已暂停，请人工查看消息');
+      return {...snapshot(),...chat};
     }
     if (command.operation==='open_conversation') {
       const matches=conversations().filter(row=>row.key===command.conversation);
