@@ -8,8 +8,8 @@
 | 桌面应用八页界面 | 已确认第一版视觉基准 | [界面与图册](design/app-ui-v1/README.md) |
 | 桌面产品与架构 | 已记录确认选项与实现边界 | [设计说明](design/app-ui-v1/desktop-spec.md) |
 | Codex 接入 | 已完成模拟数据协议探针 | [验证报告](design/app-ui-v1/codex-probe.md) |
-| 桌面应用实现 | beta.3 安装包已发布，真实操作验收后置 | [beta.3 说明](releases/v0.3.0-beta.3.md)、[构建发布](desktop-packaging.md) |
-| 后台开发迭代 | 资料与模式配置、翻页、消息/附件、人工确认；真实后台发送未验收 | [后台说明](background-browser.md)、[迭代计划](superpowers/plans/2026-11-16-live-job-search.md) |
+| 桌面应用实现 | beta.4 安装包已发布；三种路径各一次真实开聊通过 | [beta.4 说明](releases/v0.3.0-beta.4.md)、[构建发布](desktop-packaging.md) |
+| 后台开发迭代 | 卡片与回执适配；聊天列表、附件、问答及网申仍待实站验收 | [后台说明](background-browser.md)、[迭代计划](superpowers/plans/2026-11-16-live-job-search.md) |
 | 发布历史 | v0.2.0 Skill 与桌面测试版分别记录 | [变更记录](../CHANGELOG.md) |
 
 ## 维护约定
