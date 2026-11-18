@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><title>本地聊天结构回归</title>
+<div class="chat-content"><div class="user-list"><div class="user-list-content"><ul role="group">
+  <li role="listitem"><div class="friend-content-warp"><div class="friend-content selected">
+    <div class="figure"><img class="image-circle" alt=""></div><div class="text">
+      <div><span class="time">09:30</span></div><div class="title-box"><span class="name-box"><span class="name-text">测试HR甲</span><span>虚构甲公司</span><i class="vline"></i><span>招聘经理</span></span></div>
+      <div class="gray last-msg"><span class="last-msg-text">这只是列表摘要，不是当前来信</span></div>
+    </div></div></div></li>
+  <li role="listitem"><div class="friend-content-warp"><div class="friend-content">
+    <div class="text"><div class="title-box"><span class="name-box"><span class="name-text">测试HR乙</span><span>虚构乙公司</span><i class="vline"></i><span>人事</span></span></div><span class="badge-count">1</span></div>
+  </div></div></li>
+</ul></div></div></div>
+<div class="chat-conversation">
+  <div class="top-info-content"><div class="user-info-wrap"><div class="user-info"><div class="base-info">
+    <div class="name-content"><span class="name-text">测试HR甲</span></div><span>虚构甲公司</span><i class="vline"></i><span class="base-title">招聘经理</span>
+  </div></div></div><div class="chat-position-content"><div class="position-main"><div class="position-content"><div class="left-content">
+    <span class="position-name">嵌入式开发实习生</span><span class="salary">150-200元/天</span><span class="city">深圳</span>
+  </div></div></div></div></div>
+  <div class="message-content"><div class="chat-record"><div class="chat-message"><ul class="im-list">
+    <li class="message-item item-myself" data-mid="local-outgoing-1"><div class="item-time"><span class="time">09:30</span></div><div class="message-content"><div class="text">用户预设开场白</div></div></li>
+    <li class="message-item item-friend" data-mid="local-system-1"><div class="message-content"><div class="articles-center">这是平台竞争者提示卡，不能作为HR来信。</div></div></li>
+  </ul></div></div></div>
+  <div class="message-controls"><div class="chat-im chat-editor"><div class="chat-controls"><input type="file" accept="image/png"><input id="modern-resume" type="file" accept=".pdf,.doc,.docx" onchange="localMessage('outgoing','upload-'+Date.now(),this.files[0].name)"></div>
+    <div class="editor-container"><div id="chat-input" class="chat-input" contenteditable="true"></div><div class="chat-op"><button class="btn-send" onclick="localMessage('outgoing','reply-'+Date.now(),document.querySelector('#chat-input').innerText)">发送</button></div></div>
+  </div></div>
+</div>
+<script>
+function localMessage(direction,key,value,system=false){
+  const item=document.createElement('li');item.className='message-item '+(direction==='outgoing'?'item-myself':'item-friend');item.dataset.mid=key;
+  const content=document.createElement('div');content.className='message-content';const body=document.createElement('div');body.className=system?'articles-center':'text';body.textContent=value;content.append(body);item.append(content);document.querySelector('.im-list').append(item);
+}
+</script>

@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { findReplyTarget } from "./Inbox";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Inbox, attentionCategory, findReplyTarget } from "./Inbox";
 import type { Snapshot } from "../contracts";
 
 const snapshot = (): Snapshot => ({
@@ -32,4 +33,20 @@ test("旧版本没有消息映射，或值守条目不完整时保留原会话�
   expect(findReplyTarget(missing,"chat")).toBeUndefined();
   const partial = snapshot(); partial.reply_targets![0].attempt_id = "";
   expect(findReplyTarget(partial,"chat")).toBeUndefined();
+});
+
+test("岗位复核展示已观测内容并同时保留独立的面试分类", () => {
+  const value = snapshot();
+  value.attention = [
+    { id: "interview", subject: "chat", reason: "interview", resolved: 0 },
+    { id: "review", subject: "/job_detail/test.html", reason: "岗位精筛待人工查看：请查看面试邀约", resolved: 0,
+      job_review: { company: "测试公司", job: "测试岗位", city: "深圳", reason: "需确认岗位性质" } },
+  ];
+  expect(attentionCategory(value.attention[1].reason)).toBe("review");
+  const page = renderToStaticMarkup(<Inbox snapshot={value} onChanged={() => {}} initialCategory="review" />);
+  expect(page).toContain("测试岗位");
+  expect(page).toContain("深圳");
+  expect(page).toContain("需确认岗位性质");
+  expect(page).toContain("标记已处理");
+  expect(page).not.toContain("预览并确认发送");
 });

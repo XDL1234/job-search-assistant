@@ -1,19 +1,23 @@
 import { useEffect, useState } from "react";
+import { FileText, RefreshCw, Save } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { native, request } from "../bridge";
+import "./WorkspaceSettings.css";
 
+type Source = { locator: string; edited?: boolean };
 type ProfileData = {
   name?: string;
   contact?: { email?: string; phone?: string };
   target_role?: string;
   resume_text?: string;
+  sources?: Record<string, Source>;
   [key: string]: unknown;
 };
 type Extraction = {
   source_file: string;
   source_sha256: string;
   profile: ProfileData;
-  sources: Record<string, { locator: string }>;
+  sources: Record<string, Source>;
   blocks: { text: string; locator: string }[];
   warnings: string[];
 };
@@ -23,8 +27,19 @@ type Saved = {
   source_file: string;
   version_id: string;
 };
+const fieldLabels: Record<string, string> = {
+  name: "姓名", target_role: "求职方向", "contact.email": "邮箱", "contact.phone": "手机号",
+};
 
-export function Profile({ onSaved }: { onSaved: () => void }) {
+function FileBadge({ path }: { path: string }) {
+  const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase();
+  return <div className={`settings-file-icon ${ext === "pdf" ? "pdf" : "document"}`}>
+    <FileText size={25} /><span>{ext?.toUpperCase() || "文件"}</span>
+  </div>;
+}
+
+const filename = (path: string) => path.split(/[\\/]/).at(-1) || "";
+export function Profile({ onSaved }: { onSaved: () => void | Promise<void> }) {
   const [source, setSource] = useState("");
   const [resume, setResume] = useState("");
   const [extraction, setExtraction] = useState<Extraction | null>(null);
@@ -32,198 +47,123 @@ export function Profile({ onSaved }: { onSaved: () => void }) {
   const [saved, setSaved] = useState<Saved | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   useEffect(() => {
-    void request<Saved | null>("get_profile")
-      .then((value) => {
-        setSaved(value);
-        if (value) {
-          setProfile(value.profile);
-          setResume(value.resume_path);
-          setSource(value.source_file);
-        }
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+    let active = true;
+    void request<Saved | null>("get_profile").then((value) => {
+      if (!active || !value) return;
+      setSaved(value);
+      setProfile(value.profile);
+      setResume(value.resume_path);
+      setSource(value.source_file);
+    }).catch((failure) => { if (active) setError(String(failure)); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
   const perform = async (action: () => Promise<void>) => {
     setBusy(true);
     setError("");
     setNotice("");
-    try {
-      await action();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
+    try { await action(); }
+    catch (failure) { setError(String(failure)); }
+    finally { setBusy(false); }
   };
-  const choose = (kind: string, update: (path: string) => void) =>
-    perform(async () => {
-      const path = await native<string | null>("pick_file", { kind });
-      if (path) update(path);
+  const adoptSource = async (path: string) => {
+    const result = await request<Extraction>("extract_profile", { path });
+    setSource(result.source_file);
+    setExtraction(result);
+    setProfile(result.profile);
+    if (!resume && /\.(?:pdf|docx)$/i.test(path)) setResume(path);
+    setDirty(true);
+    setNotice("已在本机提取，请核对姓名和联系方式。");
+  };
+  const chooseSource = () => void perform(async () => {
+    const path = await native<string | null>("pick_file", { kind: "profile" });
+    if (path) await adoptSource(path);
+  });
+  const chooseResume = () => void perform(async () => {
+    const path = await native<string | null>("pick_file", { kind: "resume" });
+    if (path) { setResume(path); setDirty(true); }
+  });
+  const save = () => void perform(async () => {
+    const value = extraction || await request<Extraction>("extract_profile", { path: source });
+    const result = await request<Saved>("save_profile", {
+      extraction: value, profile, resume_path: resume, confirmed: true,
     });
-  const extract = () =>
-    perform(async () => {
-      const value = await request<Extraction>("extract_profile", {
-        path: source,
-      });
-      setExtraction(value);
-      setProfile(value.profile);
-      if (!resume) setResume(source);
-      setNotice("已在本机提取。请核对姓名和联系方式，原文与出处保留在下方。");
-    });
-  const save = () =>
-    perform(async () => {
-      const value =
-        extraction ||
-        (await request<Extraction>("extract_profile", { path: source }));
-      const result = await request<Saved>("save_profile", {
-        extraction: value,
-        profile,
-        resume_path: resume,
-        confirmed: true,
-      });
-      setSaved(result);
-      setNotice("资料已保存为独立版本，可前往配置投递任务。");
-      onSaved();
-    });
-  const field = (key: string, value: string) =>
-    setProfile((p) => ({ ...p, [key]: value }));
-  const contact = (key: string, value: string) =>
-    setProfile((p) => ({ ...p, contact: { ...p.contact, [key]: value } }));
+    setSaved(result);
+    setProfile(result.profile);
+    setDirty(false);
+    setNotice("资料已保存，可用于创建投递任务。");
+    await onSaved();
+  });
+  const setField = (key: string, value: string) => {
+    setProfile((current) => ({ ...current, [key]: value }));
+    setDirty(true);
+    setNotice("");
+  };
+  const setContact = (key: string, value: string) => {
+    setProfile((current) => ({ ...current, contact: { ...current.contact, [key]: value } }));
+    setDirty(true);
+    setNotice("");
+  };
+  const sources = profile.sources ?? extraction?.sources;
   return (
-    <section className="card form-page">
-      <div className="section-title">
-        <h2>简历与个人资料</h2>
-        <span className="badge">{saved ? "已保存资料" : "尚未导入"}</span>
-      </div>
-      <p>
-        导入已有资料，在本机提取并核对。投递使用原简历文件，保存资料不会改写原文件。
-      </p>
-      {error && (
-        <div className="banner error" role="alert">
-          {error}
-        </div>
-      )}
-      {notice && (
-        <div className="banner" role="status">
-          {notice}
-        </div>
-      )}
-      <fieldset
-        disabled={loading || busy}
-        style={{ border: 0, padding: 0, margin: 0 }}
-      >
-        <label>
-          资料文件（PDF / DOCX / JSON）
-          <div className="path-input">
-            <input
-              value={source}
-              onChange={(e) => {
-                setSource(e.target.value);
-                setExtraction(null);
-                setProfile({});
-              }}
-              placeholder="选择已有简历或详细资料"
-            />
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() =>
-                void choose("profile", (p) => {
-                  setSource(p);
-                  setExtraction(null);
-                  setProfile({});
-                })
-              }
-            >
-              选择文件
-            </Button>
-            <Button disabled={busy || !source} onClick={() => void extract()}>
-              提取资料
-            </Button>
-          </div>
-        </label>
-        <label>
-          投递附件
-          <div className="path-input">
-            <input
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
-              placeholder="实际发送的原简历文件"
-            />
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() => void choose("resume", setResume)}
-            >
-              选择简历
-            </Button>
-          </div>
-        </label>
-        <div className="form-grid">
-          <label>
-            姓名
-            <input
-              value={profile.name || ""}
-              onChange={(e) => field("name", e.target.value)}
-            />
-          </label>
-          <label>
-            求职方向
-            <input
-              value={profile.target_role || ""}
-              onChange={(e) => field("target_role", e.target.value)}
-            />
-          </label>
-          <label>
-            邮箱
-            <input
-              value={profile.contact?.email || ""}
-              onChange={(e) => contact("email", e.target.value)}
-            />
-          </label>
-          <label>
-            手机号
-            <input
-              value={profile.contact?.phone || ""}
-              onChange={(e) => contact("phone", e.target.value)}
-            />
-          </label>
-        </div>
-        {extraction?.warnings.map((w) => (
-          <p className="muted" key={w}>
-            {w}
-          </p>
-        ))}
-        <details>
-          <summary>原文与字段出处</summary>
-          {extraction ? (
-            extraction.blocks.map((block, i) => (
-              <div className="source-block" key={i}>
-                <small>{block.locator}</small>
-                <p>{block.text}</p>
+    <section className="settings-profile" aria-label="资料与简历">
+      {error && <div className="banner error" role="alert">{error}</div>}
+      {notice && <div className="banner" role="status">{notice}</div>}
+      <fieldset disabled={loading || busy} className="settings-profile-form">
+        <div className="settings-profile-grid">
+          <div className="settings-file-stack">
+            <article className="settings-file-card">
+              <h2>投递附件</h2>
+              <div className="settings-file-row">
+                <FileBadge path={resume} />
+                <div className="settings-file-copy">
+                  <strong title={resume}>{filename(resume) || "尚未选择简历"}</strong>
+                  <span>实际发送的文件</span>
+                </div>
+                <Button variant="secondary" onClick={chooseResume}><RefreshCw size={17} />{resume ? "更换简历" : "选择简历"}</Button>
               </div>
-            ))
-          ) : (
-            <pre>
-              {profile.resume_text ||
-                "提取后可核对原文；原文不会因为修改上述字段而被改写。"}
-            </pre>
-          )}
-        </details>
-        <div className="actions">
-          <Button
-            disabled={busy || !source || !resume || !profile.name}
-            onClick={() => void save()}
-          >
-            {busy ? "处理中…" : "核对并保存资料"}
+            </article>
+            <article className="settings-file-card">
+              <h2>资料来源</h2>
+              <div className="settings-file-row">
+                <FileBadge path={source} />
+                <div className="settings-file-copy"><strong title={source}>{filename(source) || "尚未导入资料"}</strong></div>
+                <Button variant="secondary" onClick={chooseSource}><RefreshCw size={17} />{source ? "重新导入" : "导入资料"}</Button>
+              </div>
+              <details className="settings-source">
+                <summary>原文与字段出处</summary>
+                {sources && Object.keys(sources).length > 0 && <dl className="settings-provenance">
+                  {Object.entries(sources).map(([key, provenance]) =>
+                    <div key={key}><dt>{fieldLabels[key] || key}</dt><dd>{provenance.locator}{provenance.edited ? " · 已编辑" : ""}</dd></div>)}
+                </dl>}
+                {extraction?.blocks.length ? extraction.blocks.map((block, index) =>
+                  <div className="settings-text-block" key={index}><small>{block.locator}</small><p>{block.text}</p></div>) :
+                  <pre>{profile.resume_text || "导入后可核对原文或字段出处。"}</pre>}
+                {extraction?.warnings.map((warning) => <p className="muted" key={warning}>{warning}</p>)}
+              </details>
+            </article>
+          </div>
+          <div className="settings-personal">
+            <div>
+              <span className={`workspace-tag ${saved && !dirty ? "success" : ""}`}>
+                <Save size={15} />{loading ? "正在读取" : dirty ? "更改待保存" : saved ? "已保存资料" : "本机保存"}
+              </span>
+            </div>
+            <label>姓名<input value={profile.name || ""} autoComplete="name" onChange={(event) => setField("name", event.target.value)} /></label>
+            <label>求职方向<input value={profile.target_role || ""} onChange={(event) => setField("target_role", event.target.value)} /></label>
+            <label>邮箱<input type="email" autoComplete="email" value={profile.contact?.email || ""} onChange={(event) => setContact("email", event.target.value)} /></label>
+            <label>手机号<input type="tel" autoComplete="tel" value={profile.contact?.phone || ""} onChange={(event) => setContact("phone", event.target.value)} /></label>
+          </div>
+        </div>
+        <div className="settings-profile-footer">
+          <Button disabled={busy || !source || !resume || !profile.name?.trim()} onClick={save}>
+            {busy ? "处理中…" : "保存资料"}
           </Button>
-          <span className="muted">
-            缺失信息保持为空，后续问题可转人工处理。
-          </span>
+          <span className="muted">保存资料会创建本机资料版本</span>
         </div>
       </fieldset>
     </section>

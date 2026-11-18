@@ -1,0 +1,8 @@
+{
+  "version": "0.43.0",
+  "source_url": "https://codeload.github.com/vercel-labs/agent-browser/zip/refs/tags/v0.43.0",
+  "source_sha256": "422f3abeb0b6fb40ff10756e7fb2539de9b6931020b60eb125997b8c2290ac0a",
+  "source_directory": "agent-browser-0.43.0",
+  "patch_level": 1,
+  "license": "Apache-2.0"
+}

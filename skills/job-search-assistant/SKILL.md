@@ -5,7 +5,7 @@ description: 在 Windows 浏览器中辅助求职，按用户公司 Excel/CSV �
 
 # 求职自动化助手
 
-中文与用户交流。使用已有简历和真实个人资料。本技能内置 computer use、表格处理、消息规则和记录工具；桌面应用可用 Chrome 扩展执行确定性步骤，语义精筛与复杂问题交给模型，不依赖用户额外寻找第三方 Skill。
+中文与用户交流。使用已有简历和真实个人资料。本技能内置 computer use、表格处理、消息规则和记录工具；桌面应用使用固定版本 agent-browser 执行确定性步骤，语义精筛与复杂问题交给模型，不依赖用户额外寻找第三方 Skill。
 
 ## 首次使用与依赖
 
@@ -13,7 +13,7 @@ description: 在 Windows 浏览器中辅助求职，按用户公司 Excel/CSV �
 2. 用现有 Python 运行 `scripts/run.py bootstrap --install`，自动创建用户级专用虚拟环境并补齐固定版本依赖。遵守使用者宿主的审批策略；不能将本文件视为修改系统设置的授权。
 3. 后续命令使用 bootstrap 返回的 `python` 路径。运行 `doctor`。缺少 Python、图像查看工具、交互桌面或授权时报告具体缺项，不宣称已就绪。
 4. computer use 实现已经内置；不要臆造 `computer-use` 下载地址、复制其他插件的私有代码或搜索安装来历不明的替代包。插件安装、系统权限和账号登录若必须用户完成，明确提示。
-5. 桌面安装版自带执行依赖，无需重复 bootstrap。Chrome 后台模式首次需用户加载随包扩展、确认权限并输入应用连接码；不能静默改写浏览器策略。接入方式与边界见 [boss.md](references/boss.md)。
+5. 桌面安装版自带执行依赖，无需重复 bootstrap 或加载扩展。连接 Chrome 144+ 时需在 `chrome://inspect/#remote-debugging` 开启远程调试并处理 Chrome 原生连接提示，再在应用中绑定 BOSS 标签。不能把旧扩展已连接视为新运行时已就绪。接入方式与边界见 [boss.md](references/boss.md)。
 
 ## 每轮开始
 

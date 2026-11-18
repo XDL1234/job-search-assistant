@@ -1,0 +1,18 @@
+agent-browser v0.43.0
+Upstream: https://github.com/vercel-labs/agent-browser
+License: Apache License, Version 2.0; upstream LICENSE is distributed alongside this file.
+
+Job Search Assistant embedding patch level 1, 2026-11-18:
+- Add an offline --job-assistant-probe capability report.
+- Require valid JOB_ASSISTANT_EMBEDDED / JOB_ASSISTANT_STREAM_TOKEN settings.
+- Authenticate the original session stream WebSocket handshake using Bearer credentials.
+- Disable the original stream HTTP routes and WebSocket browser input in embedding mode.
+- Authenticate native CLI-to-daemon commands and strip credentials before dispatch or broadcast.
+- Preserve upstream JPEG capture, frame pacing and rendering acknowledgements.
+- Add JOB_ASSISTANT_EXISTING_DAEMON=1 to refuse daemon startup/replacement during bound operations.
+- Preserve existing tabs during embedded auto-connect; report an empty eligible tab set without creating a page.
+- Refuse a first pinned embedded attach without a selected target instead of implicitly creating a tab.
+- Skip Runtime.enable subscriptions in embedding mode because the application does not consume console/error events; keep direct Runtime command responses and exceptions unchanged.
+
+The embedding environment variables and probe are additions of this project,
+not options provided by the unmodified upstream distribution.

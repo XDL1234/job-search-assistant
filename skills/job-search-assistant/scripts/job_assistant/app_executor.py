@@ -19,7 +19,8 @@ def executor_action(store, run_id, request):
         raise ValueError('不允许跨轮次操作')
     store.check_run(run_id)
     config = verify_materials(store, run_id)
-    if config.get('simulation') is not True and config.get('employment_type') not in ('internship','campus','full_time'):
+    from .job_preferences import JOB_TYPES
+    if config.get('simulation') is not True and config.get('employment_type') not in JOB_TYPES:
         raise ValueError('缺少已确认的真实任务配置')
     req = {**request, 'run_id': run_id}
     if req.get('attempt_id') and not store.owns_attempt(run_id, req['attempt_id']):
@@ -27,6 +28,9 @@ def executor_action(store, run_id, request):
     if req.get('action_id') and store.one('actions', req['action_id'])['run_id'] != run_id:
         raise ValueError('动作不属于当前轮次')
     op = req['operation']
+    if op == 'status':
+        from .app_decisions import compact_status
+        return {'success':True,'contentItems':[{'type':'inputText','text':json.dumps(compact_status(store,run_id),ensure_ascii=False)}]}
     if config.get('simulation') is not True and config.get('channels') == ['boss'] and op in ('bind', 'capture', 'act'):
         raise ValueError('BOSS 后台任务请使用受控 browser 操作，不使用桌面坐标发送')
     if op == 'boss_decide':
@@ -49,8 +53,11 @@ def executor_action(store, run_id, request):
                 result = browser_action(store,run_id,action,**params)
             else:
                 raise ValueError('不允许此浏览器操作')
-        return {'success':True,'contentItems':[{'type':'inputText','text':json.dumps(result,ensure_ascii=False)},
-            {'type':'inputImage','imageUrl':'data:image/png;base64,'+base64.b64encode(Path(result['frame']['path']).read_bytes()).decode('ascii')}]}
+        from .agent_browser import compact_observation
+        content=[{'type':'inputText','text':json.dumps(compact_observation(result,req.get('scope','auto'),req.get('offset',0)),ensure_ascii=False)}]
+        if req.get('include_image') is True:
+            content.append({'type':'inputImage','imageUrl':'data:image/png;base64,'+base64.b64encode(Path(result['frame']['path']).read_bytes()).decode('ascii')})
+        return {'success':True,'contentItems':content}
     if op == 'bind':
         req['expected_title'] = config['window_title']
     if op in ('bind', 'capture', 'act'):

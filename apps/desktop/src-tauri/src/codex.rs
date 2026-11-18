@@ -116,11 +116,13 @@ impl CodexClient {
         exe: &Path,
         cwd: &Path,
         events: mpsc::UnboundedSender<Value>,
+        proxy_environment: &HashMap<String, String>,
     ) -> Result<Arc<Self>, String> {
         let mut command = Command::new(exe);
         command
             .args(["app-server", "--listen", "stdio://"])
-            .current_dir(cwd);
+            .current_dir(cwd)
+            .envs(proxy_environment);
         Self::spawn_command(command, events).await
     }
 

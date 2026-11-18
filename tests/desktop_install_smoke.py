@@ -12,6 +12,7 @@ import uuid
 
 from playwright.sync_api import sync_playwright, expect
 from desktop_app_smoke import close_window
+from desktop_save_dialog import answer_export_dialog
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,7 +46,7 @@ def main():
     # 用实际桌面快捷方式启动；路径按 PowerShell 字面量转义，不拼入可执行表达式。
     literal=str(args.shortcut.resolve()).replace("'","''")
     powershell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
-    output=subprocess.check_output([str(powershell),'-NoProfile','-Command',f"(Start-Process -FilePath '{literal}' -PassThru).Id"],
+    output=subprocess.check_output([str(powershell),'-NoProfile','-Command',f"(Start-Process -FilePath '{literal}' -WindowStyle Hidden -PassThru).Id"],
         env=env,cwd=folder,creationflags=subprocess.CREATE_NO_WINDOW,timeout=30)
     pid=int(output.strip())
     report={'pid':pid,'shortcut':str(args.shortcut),'inference_requested':False}
@@ -61,38 +62,65 @@ def main():
         with sync_playwright() as playwright:
             browser=playwright.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
             page=browser.contexts[0].pages[0]
-            expect(page.get_by_role('heading',name='今天，开始新的机会')).to_be_visible(timeout=30000)
+            expect(page.get_by_role('heading',name='今天的求职进展')).to_be_visible(timeout=30000)
             version=json.loads((ROOT/'apps/desktop/package.json').read_text())['version']
-            expect(page.get_by_text(f'测试版 {version} · 开发验证中',exact=True)).to_be_visible()
+            expect(page.locator('.brand')).to_have_attribute('title', f'求职助手 {version}')
+            expect(page.locator('.workspace-topbar').get_by_role('button', name='演示', exact=True)).to_have_count(0)
             expect(page.get_by_text('浏览器界面预览，执行器未连接。')).to_have_count(0)
-            expect(page.get_by_text('还没有投递任务',exact=True)).to_be_visible()
+            expect(page.get_by_text('暂无进行中或暂停的投递任务',exact=True)).to_be_visible()
             page.screenshot(path=str(folder/'installed-home.png'))
             report['embedded_ui_and_worker']='passed'
-            page.get_by_role('navigation').get_by_role('button',name='投递记录',exact=True).click()
+            page.get_by_role('navigation', name='主导航').get_by_role('button', name='投递记录', exact=True).click()
+            expect(page.get_by_role('heading', name='投递记录', exact=True)).to_be_visible()
+            page.get_by_role('button', name='全部日期', exact=True).click()
+            record_day = page.get_by_label('记录日期', exact=True)
+            record_day.fill('2020-01-02')
+            page.get_by_role('button', name='应用日期', exact=True).click()
+            expect(page.get_by_text('暂无投递记录', exact=True)).to_be_visible()
+            page.get_by_role('button', name='清除日期', exact=True).click()
+            expect(page.get_by_role('button', name='全部日期', exact=True)).to_be_visible()
+            report['packaged_history_date_filter']='passed'
+            page.get_by_role('navigation',name='主导航').get_by_role('button',name='投递任务',exact=True).click()
+            page.get_by_role('button', name='新建投递', exact=True).click()
+            page.get_by_role('button', name='编辑岗位条件', exact=True).click()
+            page.get_by_label('求职城市', exact=True).fill('深圳')
+            page.get_by_role('button', name='保存条件', exact=True).click()
+            expect(page.get_by_text('已保存岗位条件。', exact=True)).to_be_visible()
+            page.get_by_role('button', name='关闭岗位条件编辑', exact=True).click()
+            expect(page.get_by_text('深圳', exact=False).first).to_be_visible()
+            preferences = json.loads((folder/'data/job-preferences.json').read_text(encoding='utf-8'))
+            assert preferences['boss_filters']['city'] == '深圳'
+            report['packaged_job_preferences']='passed'
+            expect(page.get_by_role('heading', name='新建投递', exact=True)).to_be_visible()
+            expect(page.get_by_role('radio', name='脚本快速沟通', exact=True)).to_be_visible()
+            expect(page.get_by_role('spinbutton')).to_be_visible()
+            page.screenshot(path=str(folder/'installed-task-creation.png'))
+            report['packaged_task_creation']='passed'
+            page.get_by_role('navigation',name='主导航').get_by_role('button',name='投递记录',exact=True).click()
             page.get_by_role('button',name='导出 Excel',exact=True).click()
+            destination = folder / '自选投递记录.xlsx'
+            answer_export_dialog(pid, destination)
             expect(page.get_by_role('status')).to_contain_text('记录已导出',timeout=20000)
+            assert destination.is_file()
             report['worker_export']='passed'
-            page.get_by_role('button',name='设置与帮助',exact=True).click()
-            page.get_by_role('button',name='启动浏览器连接器',exact=True).click()
-            code=page.get_by_role('textbox',name='浏览器连接码')
-            expect(code).to_be_visible(timeout=25000)
-            bridge_port=int(code.input_value().split(':',1)[0])
-            report['packaged_bridge_start']='passed'
+            page.locator('.sidebar').get_by_role('button', name='设置', exact=True).click()
+            page.get_by_role('button', name='连接与诊断', exact=True).click()
+            expect(page.get_by_role('button',name='连接 Chrome',exact=True)).to_be_enabled()
+            expect(page.get_by_role('button',name='检查当前页面')).to_be_disabled()
+            runtime=page.evaluate("window.__TAURI_INTERNALS__.invoke('browser_runtime_status')")
+            assert runtime['installed'] and not runtime['connected']
+            probe=json.loads(subprocess.check_output([runtime['executable'],'--job-assistant-probe'],env=env,text=True))
+            assert probe['embedded_auth'] and probe['read_only'] and probe['capabilities']['existing_daemon_only']
+            report['packaged_runtime_without_browser_connection']='passed'
             if args.connect:
-                page.get_by_role('button',name='设置与帮助',exact=True).click()
                 page.get_by_role('button',name='连接 Codex',exact=True).click()
-                expect(page.locator('.settings button').filter(has_text='连接 Codex')).to_be_enabled(timeout=90000)
-                report['connection_text']=page.locator('.settings').inner_text()
+                expect(page.get_by_role('button', name='连接 Codex', exact=True)).to_be_enabled(timeout=90000)
+                report['connection_text']=page.locator('.settings-page').inner_text()
                 page.screenshot(path=str(folder/'installed-connection.png'))
             close_window(pid)
             deadline=time.monotonic()+75
             while running(pid) and time.monotonic()<deadline:time.sleep(.25)
             assert not running(pid),'关闭后应用仍存活'
-            try:
-                with socket.create_connection(('127.0.0.1',bridge_port),timeout=2):
-                    raise AssertionError('关闭后浏览器连接器仍在监听')
-            except OSError:
-                report['bridge_close']='passed'
             report['close']='passed'
     except Exception as error:
         report['error']=str(error)

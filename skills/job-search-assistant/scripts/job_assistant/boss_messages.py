@@ -21,6 +21,72 @@ def _save_state(store, run_id, state):
     temporary.write_text(json.dumps(state,ensure_ascii=False),encoding='utf-8');temporary.replace(path)
 
 
+def remember_job_context(store, run_id, attempt, evidence):
+    """只记录实际打开并已成功沟通岗位的可见卡片；不是模型提供的匹配提示。"""
+    source=store.root/'agent-browser-state'/(run_id+'.json')
+    if not source.is_file():return
+    card=json.loads(source.read_text(encoding='utf-8')).get('source_card',{})
+    if (card.get('key')!=attempt['job_key'] or card.get('company')!=attempt['company'] or card.get('job')!=attempt['job']):return
+    folder=store.root/'boss-job-context';folder.mkdir(exist_ok=True)
+    path=folder/(attempt['id']+'.json')
+    path.write_text(json.dumps({'attempt_id':attempt['id'],'job_key':attempt['job_key'],'evidence_id':evidence,
+        'card':{key:card.get(key,'') for key in ('company','job','city','salary')}},ensure_ascii=False),encoding='utf-8')
+
+
+def _proven_job_card(store, attempt):
+    successful=list(store.conn.execute("SELECT evidence_id FROM actions WHERE attempt_id=? AND kind='greet' AND status='succeeded'",(attempt['id'],)))
+    if not successful:return None
+    record_path=store.root/'boss-job-context'/(attempt['id']+'.json')
+    if record_path.is_file():
+        record=json.loads(record_path.read_text(encoding='utf-8'))
+        if record.get('attempt_id')!=attempt['id'] or record.get('job_key')!=attempt['job_key']:
+            raise ValueError('岗位可见事实记录不属于当前申请')
+        if record.get('evidence_id') not in [row[0] for row in successful]:return None
+        store.check_evidence(record['evidence_id'],attempt['id'])
+        return record.get('card')
+    # 已发布版本的最后一个实际岗位可由持久脚本进度恢复，仍要求成功回执PNG。
+    for row in successful:store.check_evidence(row[0],attempt['id'])
+    legacy=store.root/'script-state'/(attempt['run_id']+'.json')
+    card=json.loads(legacy.read_text(encoding='utf-8')).get('card',{}) if legacy.is_file() else {}
+    if not card:
+        saved=store.conn.execute('SELECT state FROM app_ai_selection WHERE run_id=?',(attempt['run_id'],)).fetchone()
+        card=json.loads(saved[0]).get('current_card',{}) if saved else {}
+    if card.get('key')==attempt['job_key'] and card.get('company')==attempt['company'] and card.get('job')==attempt['job']:
+        return card
+    return None
+
+
+def _matching_attempts(store, run_id, observation):
+    attempts=list(store.conn.execute('''SELECT a.* FROM attempts a WHERE a.channel='boss'
+        AND (a.run_id=? OR EXISTS(SELECT 1 FROM run_attempts r WHERE r.run_id=? AND r.attempt_id=a.id))''',(run_id,run_id)))
+    keys=observation.get('job_keys',[])
+    visible=observation.get('identity_source')=='visible_identity' or str(observation.get('conversation','')).startswith('visible-v1:')
+    if keys and not visible:return [row['id'] for row in attempts if row['job_key'] in keys]
+    context=observation.get('job_context')
+    fields=('company','job','city','salary')
+    if not isinstance(context,dict) or any(not isinstance(context.get(key),str) or not context[key].strip() for key in fields):return []
+    def normalized(value,key):
+        value=re.sub(r'\s+','',value)
+        return re.split(r'[·•/]',value)[0] if key=='city' else value
+    matched=[]
+    for attempt in attempts:
+        card=_proven_job_card(store,attempt)
+        if card and all(isinstance(card.get(key),str) and card[key].strip() and
+            normalized(card[key],key)==normalized(context[key],key) for key in fields):matched.append(attempt['id'])
+    return matched
+
+
+def _identity_drift(store, attempt_id, conversation, latest):
+    previous={row[0] for row in store.conn.execute("SELECT DISTINCT recipient FROM actions WHERE attempt_id=? AND kind IN ('reply','resume') AND status!='not_done'",(attempt_id,))}
+    for path in (store.root/'boss-watch').glob('*.json'):
+        if not re.fullmatch(r'[0-9a-f]{32}\.json',path.name):continue
+        state=json.loads(path.read_text(encoding='utf-8'))
+        previous.update(key for key,item in state.get('conversations',{}).items() if item.get('bound_attempt_id',item.get('attempt_id'))==attempt_id)
+    if latest and latest.get('key'):
+        previous.update(row[0] for row in store.conn.execute('SELECT conversation_id FROM messages WHERE message_key=?',(latest['key'],)))
+    return sorted(previous-{conversation})
+
+
 def _attention(store, conversation, reason, handoff=True):
     from .desktop import notify
     item=store.handoff(conversation,reason) if handoff else store.attention(conversation,reason)
@@ -81,8 +147,8 @@ def decide_message(store, run_id, conversation, message_key, analysis=None, draf
     return decision
 
 
-def send_action(store, run_id, action_id):
-    from .browser_bridge import bridge_call
+def send_action(store, run_id, action_id, expected_target=None):
+    from .agent_browser import browser_call, action_check
     from .boss_script import save_frame
     config=verify_materials(store,run_id)
     action=store.one('actions',action_id)
@@ -98,13 +164,30 @@ def send_action(store, run_id, action_id):
     manual=store.manual_send_allowed(action)
     if INTERVIEW.search(row[0]) and not manual:
         store.handoff(action['recipient'],'interview');raise ValueError('面试事项需要用户明确回复')
+    target=read_watch_state(store,run_id).get('conversations',{}).get(action['recipient'],{})
+    if action['recipient'].startswith('visible-v1:') and (target.get('attempt_id')!=action['attempt_id'] or
+            _matching_attempts(store,run_id,{'conversation':action['recipient'],
+                'job_keys':target.get('job_keys',[]),'job_context':target.get('job_context')})!=[action['attempt_id']]):
+        raise ValueError('可见会话身份没有当前唯一且证据完整的岗位绑定')
     store.claim_action(run_id,action_id)
     try:
         params={'action_id':action_id,'conversation':action['recipient'],'message_key':payload['message_key'],
                 'message_text':row[0],'manual':manual}
+        if expected_target:
+            params['expected_target']=expected_target
+        if target.get('attempt_id')==action['attempt_id']:
+            if action['recipient'].startswith('visible-v1:') and target.get('job_context'):
+                params['expected_job_context']=target['job_context']
+            elif target.get('job_keys'):
+                params['expected_job_key']=attempt['job_key']
+            elif target.get('job_context'):
+                params['expected_job_context']=target['job_context']
+        elif action['recipient'].startswith('visible-v1:'):
+            raise ValueError('可见会话身份没有当前已核验岗位绑定')
         if action['kind']=='reply':params['text']=payload['text']
         else:params['resume_path']=config['resume_path']
-        result=bridge_call(store.root,action['kind'],run_id,**params)
+        result=browser_call(store.root,action['kind'],run_id,
+                            check=action_check(store,run_id,action['kind'],params),**params)
         save_frame(store,run_id,result)
         evidence=store.evidence(action['attempt_id'],result['frame']['path'],'result')
         if result.get('not_done') is True:
@@ -136,7 +219,7 @@ def finish_ai_watch(store, run_id):
     return {'resolved':True}
 
 
-def watch_step(store, run_id):
+def watch_step(store, run_id, expected_target=None):
     from .app_runs import app_session
     from .boss_script import browser_action
     from .desktop import desktop_lock
@@ -158,10 +241,12 @@ def watch_step(store, run_id):
             key=next(iter(queue));pending=queue.pop(key);state['pending_ai']=pending
         if state['phase']=='respond':
             action=state.pop('action_id');state['phase']='observe';_save_state(store,run_id,state)
-            send_action(store,run_id,action)
+            send_action(store,run_id,action,expected_target=expected_target)
             return {'done':False,'message':'已按预设规则处理消息','delay_seconds':2}
         operation='open_conversation' if state['phase']=='open' else 'messages'
         params={'conversation':state['open_conversation']} if operation=='open_conversation' else {}
+        if expected_target:
+            params['expected_target']=expected_target
         observation=browser_action(store,run_id,operation,**params)
         state['phase']='observe'
         conversation=observation.get('conversation')
@@ -173,21 +258,33 @@ def watch_step(store, run_id):
             old=state['conversations'].get(conversation,{})
             unseen=[message for message in messages if message.get('key') and message['key'] not in old.get('seen_keys',[])]
             incoming=[message for message in unseen if message.get('direction')=='incoming']
+            interview=[message for message in unseen if message.get('direction')!='outgoing' and INTERVIEW.search(message['text'])]
             for message in incoming:
                 store.observe_message(conversation,message['key'],message['text'])
-            target=old.get('attempt_id')
-            if not target:
-                keys=observation.get('job_keys',[])
-                candidates=[row['id'] for row in store.conn.execute('SELECT a.* FROM attempts a WHERE a.channel=? AND (a.run_id=? OR EXISTS(SELECT 1 FROM run_attempts r WHERE r.run_id=? AND r.attempt_id=a.id))',('boss',run_id,run_id)) if row['job_key'] in keys]
-                if len(candidates)==1:target=candidates[0]
+            candidates=_matching_attempts(store,run_id,observation)
+            target=candidates[0] if len(candidates)==1 else None
+            drift=_identity_drift(store,target,conversation,latest) if target else []
             current={**old,'seen_keys':[message['key'] for message in messages if message.get('key')][-200:]}
+            if target:
+                current.update(attempt_id=target,bound_attempt_id=old.get('bound_attempt_id',old.get('attempt_id',target)),
+                               job_keys=observation.get('job_keys',[]),job_context=observation.get('job_context'))
+            else:current.pop('attempt_id',None)
             if target and latest.get('key') and latest.get('direction')=='incoming':
                 current.update(attempt_id=target,message_key=latest['key'],text=latest['text'])
+            else:
+                current.pop('message_key',None);current.pop('text',None)
             state['conversations'][conversation]=current
             _save_state(store,run_id,state)
-            if incoming:
-                if any(INTERVIEW.search(message['text']) for message in incoming):
-                    _attention(store,conversation,'interview')
+            changed_job=target and current.get('bound_attempt_id')!=target
+            if drift or changed_job:
+                reason='岗位联系人可见身份或关联岗位已变化，请人工核对后再恢复'
+                for previous in drift:_attention(store,previous,reason)
+                _attention(store,conversation,reason)
+            elif interview:
+                _attention(store,conversation,'interview')
+            elif incoming:
+                if any(message.get('kind','text')!='text' for message in incoming):
+                    _attention(store,conversation,'来信包含尚未支持的非文本内容，请人工核对')
                 elif len(incoming)>1:
                     _attention(store,conversation,'多条未处理消息，需整体核对后回复')
                 elif latest.get('direction')=='incoming' and latest.get('key')==incoming[0]['key']:

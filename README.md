@@ -2,11 +2,11 @@
 
 Windows 求职辅助项目，提供桌面应用测试版及 Codex Skill / 插件源码包。简历与个人资料由用户提供；按轮次授权后操作，面试邀约始终转人工。
 
-**下载桌面测试版：** [v0.3.0-beta.4 Windows x64 安装包](https://github.com/XDL1234/job-search-assistant/releases/tag/v0.3.0-beta.4)。下载 Assets 中的 `setup.exe`，可选择安装目录并创建桌面图标；无需安装 Python、Node 或 Rust。[功能范围与安装说明](docs/releases/v0.3.0-beta.4.md)。
+**下载桌面测试版** [v0.3.0-beta.10 Windows x64 安装包](https://github.com/XDL1234/job-search-assistant/releases/tag/v0.3.0-beta.10)。在 Assets 中下载安装程序，可选择安装目录并使用桌面快捷方式。普通用户无需安装 Python、Node 或 Rust。详见[功能范围与安装说明](docs/releases/v0.3.0-beta.10.md)。
 
 ## 项目状态与文档
 
-既有实现为 **v0.2 Skill 与本机浏览器面板**。独立 Windows 桌面应用已发布 **v0.3.0-beta.4 测试版安装包**：三种投递路径已各完成一次真实开聊、截图与回执核验。聊天值守、附件和官网网申仍待实站验收，不能把少量开聊成功等同完整求职流程已可用。
+Windows 桌面应用提供投递任务、执行工作台、待办、投递记录和设置。停止的任务可以编辑并继续，Excel 导出支持选择保存位置。独立 Skill 与本机浏览器面板仍可使用。
 
 - [文档索引与维护约定](https://github.com/XDL1234/job-search-assistant/blob/main/docs/README.md)
 - [八页界面稿与设计说明](https://github.com/XDL1234/job-search-assistant/blob/main/docs/design/app-ui-v1/README.md)
@@ -15,9 +15,7 @@ Windows 求职辅助项目，提供桌面应用测试版及 Codex Skill / 插件
 - [后台浏览器连接与开发进度](docs/background-browser.md)
 - [变更记录](https://github.com/XDL1234/job-search-assistant/blob/main/CHANGELOG.md)
 
-桌面应用采用 Tauri 2、React、TypeScript，复用现有 Python 与 SQLite。BOSS 后台模式通过用户安装的 Chrome 扩展连接已登录页面；官网保留桌面 computer use。
-
-已发布 `0.3.0-beta.4`：修复当前 BOSS 卡片字段和页面/回执等待，保留实习、校招、正式工作配置，以及脚本、AI 推荐、AI 精筛和官网入口。当前账号的聊天列表尚需适配，自动回复/值守暂勿作为已验收功能开启，具体以 [beta.4 说明](docs/releases/v0.3.0-beta.4.md)为准。首次须在 Chrome 加载随包连接器；升级后需在扩展管理页刷新扩展，单独刷新 BOSS 网页可能仍使用已缓存旧脚本。详见[后台连接步骤](docs/background-browser.md)。
+桌面应用采用 Tauri 2、React、TypeScript，并复用 Python 与 SQLite。BOSS 通过内置原生浏览器组件连接现有 Chrome，工作台提供本地 JPEG 预览，官网网申继续使用桌面操作。最新测试版已通过隔离 Chrome 与安装版回归，真实附件、招聘方问答和官网网申仍待实站验收。连接方式见[后台浏览器说明](docs/background-browser.md)。
 
 ## 单独安装 Skill（开发者与既有用户）
 

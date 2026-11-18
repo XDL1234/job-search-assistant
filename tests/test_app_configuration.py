@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'skills/job-search-assistant/scripts'))
 from job_assistant.app_service import handle_app_request
@@ -50,6 +51,134 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(result['result']['config']['company_rows'][0]['company'],'测试公司')
         table.write_text('公司名称,申请网站\n其他公司,https://example.org\n',encoding='utf-8')
         self.assertFalse(self.call('start_run',ticket=result['result']['ticket'],confirmed=True)['ok'])
+
+    def test_company_review_allows_only_valid_rows_from_the_same_file(self):
+        table = self.root / 'review.csv'
+        text = ('公司名称,申请网站\n甲,https://example.org/apply\n乙,\n'
+                '甲,https://example.org/apply\n丙,https://user@example.org\n')
+        table.write_text(text, encoding='utf-8')
+        inspection = self.call('inspect_company_table', path=str(table))['result']
+        self.assertEqual([r['status'] for r in inspection['rows']], ['valid', 'invalid', 'duplicate', 'invalid'])
+        self.assertEqual([r['source_row'] for r in inspection['rows']], [2, 3, 4, 5])
+        config = self.config(channels=['web'], company_table=str(table), execution_mode='ai',
+                             reviewed_company_table_sha256=inspection['sha256'])
+        preview = self.call('preview_run', config=config)['result']
+        self.assertEqual([r['company'] for r in preview['config']['company_rows']], ['甲'])
+        with patch('webbrowser.open', return_value=True) as open_url:
+            valid = self.call('open_company_site', path=str(table), sha256=inspection['sha256'], source_row=2)
+            self.assertTrue(valid['ok'], valid)
+            self.assertFalse(self.call('open_company_site', path=str(table), sha256=inspection['sha256'], source_row=3)['ok'])
+            self.assertFalse(self.call('open_company_site', path=str(table), sha256='wrong', source_row=2)['ok'])
+            open_url.assert_called_once_with('https://example.org/apply')
+        table.write_text(text + '丁,https://example.net/apply\n', encoding='utf-8')
+        self.assertFalse(self.call('preview_run', config=config)['ok'])
+        self.assertFalse(self.call('start_run', ticket=preview['ticket'], confirmed=True)['ok'])
+
+    def test_saved_filters_remain_independent_and_are_frozen_in_preview(self):
+        self.assertIsNone(self.call('get_job_preferences')['result'])
+        original = {'target_roles': [' MCU ', 'MCU'], 'employment_type': 'part_time',
+                    'boss_filters': {'city': ' 深圳 ', 'district': '南山区', 'business_area': '科技园',
+                                     'positions': [['电子/电气/通信', '电子/硬件开发', '单片机']],
+                                     'salary': '10-20K'}}
+        saved = self.call('save_job_preferences', preferences=original)['result']
+        self.assertEqual(self.call('get_job_preferences')['result'], saved)
+        self.assertEqual(saved['target_roles'], ['MCU'])
+        preview = self.call('preview_run', config=self.config(**saved))['result']
+        self.assertEqual(preview['config']['cities'], ['深圳'])
+        self.assertEqual(preview['config']['boss_filters'], saved['boss_filters'])
+        changed = {**saved, 'boss_filters': {'city': '青岛'}}
+        self.assertTrue(self.call('save_job_preferences', preferences=changed)['ok'])
+        created = self.call('start_run', ticket=preview['ticket'], confirmed=True)['result']
+        record = self.db.one('runs', created['run_id'])
+        self.assertEqual(record['status'], 'paused')
+        self.assertEqual(json.loads(record['config'])['boss_filters'], saved['boss_filters'])
+
+    def test_stopped_task_revision_preserves_sent_records_quota_and_identity(self):
+        from PIL import Image
+        original = self.call('preview_run', config=self.config())['result']
+        run = self.call('start_run', ticket=original['ticket'], confirmed=True)['result']['run_id']
+        self.db.control(run, 'running')
+        for number in (1, 2):
+            job_url = f'https://www.zhipin.com/job_detail/{number}.html'
+            attempt = self.db.begin_attempt(run, '合成公司', job_url, '测试岗位', 'boss', job_url)
+            action = self.db.prepare_action(run, attempt, 'greet', f'合成招聘者{number}', {})
+            self.db.claim_action(run, action)
+            frame = self.root/'synthetic.png'
+            Image.new('RGB', (2, 2)).save(frame)
+            evidence = self.db.evidence(attempt, frame, 'result')
+            self.db.finish_action(action, 'succeeded', evidence, '合成回执')
+        job_url = 'https://www.zhipin.com/job_detail/unsent.html'
+        unsent = self.db.begin_attempt(run, '待选合成公司', job_url, '测试岗位', 'boss', job_url)
+        self.assertFalse(self.call('preview_run', run_id=run, config=self.config())['ok'])
+        self.db.control(run, 'stopped')
+        self.assertFalse(self.call('preview_run', run_id=run, config=self.config(max_contacts=1))['ok'])
+        config = self.config(max_contacts=4, target_roles=['测试岗位'], boss_filters={'city':'深圳'})
+        draft = self.call('preview_run', run_id=run, config=config)['result']
+        self.assertEqual(draft['used_contacts'], 2)
+        self.assertFalse(self.call('start_run', ticket=draft['ticket'], confirmed=True)['ok'])
+        self.assertEqual(self.call('revise_run', ticket=draft['ticket'], confirmed=True)['result']['run_id'], run)
+        self.assertFalse(self.call('revise_run', ticket=draft['ticket'], confirmed=True)['ok'])
+        row = self.db.one('runs', run)
+        self.assertEqual(row['status'], 'paused')
+        self.assertEqual(json.loads(row['config'])['max_contacts'], 4)
+        self.assertEqual(json.loads(row['config'])['boss_filters'], {'city':'深圳'})
+        self.assertEqual(json.loads(row['approval'])['revisions'][0]['previous_config'], original['config'])
+        self.assertEqual(self.db.one('actions', action)['status'], 'succeeded')
+        self.assertEqual(self.db.one('attempts', unsent)['status'], 'skipped')
+        self.db.control(run, 'running')
+        with self.assertRaisesRegex(ValueError, '重复投递'):
+            job_url = 'https://www.zhipin.com/job_detail/2.html'
+            self.db.begin_attempt(run, '合成公司', job_url, '测试岗位', 'boss', job_url)
+
+    def test_revision_rejects_unresolved_send_and_stale_approval(self):
+        draft = self.call('preview_run', config=self.config())['result']
+        run = self.call('start_run', ticket=draft['ticket'], confirmed=True)['result']['run_id']
+        revision = self.call('preview_run', run_id=run, config=self.config())['result']
+        self.db.control(run, 'running')
+        self.db.control(run, 'paused')
+        self.assertFalse(self.call('revise_run', ticket=revision['ticket'], confirmed=True)['ok'])
+        self.db.control(run, 'running')
+        url = 'https://www.zhipin.com/job_detail/uncertain.html'
+        attempt = self.db.begin_attempt(run, '测试公司', url, '测试岗位', 'boss', url)
+        action = self.db.prepare_action(run, attempt, 'greet', '合成招聘者', {})
+        self.db.claim_action(run, action)
+        self.db.finish_action(action, 'uncertain', reason='合成页面未确认')
+        self.db.control(run, 'paused')
+        self.assertIn('待核查', self.call('preview_run', run_id=run, config=self.config())['error']['message'])
+
+    def test_pause_stop_and_recovery_cancel_unclaimed_actions_before_revision(self):
+        for transition in ('paused', 'stopped', 'recovery'):
+            with self.subTest(transition=transition):
+                draft = self.call('preview_run', config=self.config())['result']
+                run = self.call('start_run', ticket=draft['ticket'], confirmed=True)['result']['run_id']
+                self.db.control(run, 'running')
+                url = f'https://www.zhipin.com/job_detail/{transition}.html'
+                attempt = self.db.begin_attempt(run, '测试公司', url, '测试岗位', 'boss', url)
+                action = self.db.prepare_action(run, attempt, 'greet', '合成招聘者', {})
+                if transition == 'recovery':
+                    self.db.control(run, 'stopped')
+                    result = self.call('recover_app')
+                else:
+                    result = self.call('control_run', run_id=run, action=transition)
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(self.db.one('actions', action)['status'], 'not_done')
+                revision = self.call('preview_run', run_id=run, config=self.config(max_contacts=1))['result']
+                self.assertEqual(revision['used_contacts'], 0)
+                self.assertEqual(self.call('revise_run', ticket=revision['ticket'], confirmed=True)['result']['run_id'], run)
+                self.db.control(run, 'running')
+                with self.assertRaisesRegex(ValueError, '核实'):
+                    self.db.claim_action(run, action)
+                self.assertEqual(self.db.one('attempts', attempt)['status'], 'skipped')
+
+    def test_ambiguous_or_conflicting_filter_requests_do_not_enter_preview(self):
+        for fields in ({'district': '南山区'}, {'city': '深圳', 'business_area': '科技园'},
+                       {'city': '深圳', 'district': '南山区', 'metro_line': '1号线'},
+                       {'positions': [['不限'], ['单片机']]}, {'job_type': '实习'}):
+            self.assertFalse(self.call('preview_run', config=self.config(boss_filters=fields))['ok'], fields)
+        self.assertFalse(self.call('preview_run', config=self.config(
+            boss_filters={'city': '深圳'}, cities=['广州']))['ok'])
+        self.assertFalse(self.call('preview_run', config=self.config(
+            boss_filters={'experience': '3-5年'}, employment_type='campus'))['ok'])
 
 
 if __name__=='__main__':unittest.main()

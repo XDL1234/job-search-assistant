@@ -1,0 +1,119 @@
+{
+  "changes": [
+    {
+      "path": "cli/src/native/actions.rs",
+      "before": "        None => {\n            if pin {\n                // A pinned session never implicitly adopts an existing tab:\n",
+      "after": "        None => {\n            if pin {\n                if crate::job_assistant::is_embedded() {\n                    return Err(\"Select an existing target before enabling a pinned embedded session\".to_string());\n                }\n                // A pinned session never implicitly adopts an existing tab:\n"
+    },
+    {
+      "path": "cli/src/main.rs",
+      "before": "mod install;\n",
+      "after": "mod install;\nmod job_assistant;\n"
+    },
+    {
+      "path": "cli/src/main.rs",
+      "before": "fn main() {\n",
+      "after": "fn main() {\n    if env::args().len() == 2 && env::args().nth(1).as_deref() == Some(\"--job-assistant-probe\") {\n        print_json_value(job_assistant::probe());\n        return;\n    }\n    if let Err(error) = job_assistant::validate_env() {\n        eprintln!(\"{error}\");\n        exit(2);\n    }\n    if job_assistant::is_embedded()\n        && env::var(\"AGENT_BROWSER_DASHBOARD\").is_ok()\n    {\n        eprintln!(\"Standalone dashboard is disabled in embedding mode\");\n        exit(2);\n    }\n"
+    },
+    {
+      "path": "cli/src/native/stream/mod.rs",
+      "before": "        let addr = format!(\"127.0.0.1:{}\", preferred_port);\n",
+      "after": "        crate::job_assistant::validate_env()?;\n        let addr = format!(\"127.0.0.1:{}\", preferred_port);\n"
+    },
+    {
+      "path": "cli/src/native/stream/websocket.rs",
+      "before": "use tokio::net::{TcpListener, TcpStream};\n",
+      "after": "use tokio::io::AsyncWriteExt;\nuse tokio::net::{TcpListener, TcpStream};\n"
+    },
+    {
+      "path": "cli/src/native/stream/websocket.rs",
+      "before": "    let request = String::from_utf8_lossy(&buf[..n]);\n\n    if is_websocket_upgrade(&request) {\n",
+      "after": "    let request = String::from_utf8_lossy(&buf[..n]);\n\n    // The embedding only exposes authenticated media; disable every HTTP route.\n    if crate::job_assistant::is_embedded() && !is_websocket_upgrade(&request) {\n        let mut stream = stream;\n        let _ = stream.write_all(b\"HTTP/1.1 403 Forbidden\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n\").await;\n        return;\n    }\n\n    if is_websocket_upgrade(&request) {\n"
+    },
+    {
+      "path": "cli/src/native/stream/websocket.rs",
+      "before": "            let origin = req\n                .headers()\n",
+      "after": "            let authorization = req.headers().get(\"authorization\").and_then(|v| v.to_str().ok());\n            if !crate::job_assistant::authorized(authorization) {\n                let mut reject =\n                    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(\n                        \"Unauthorized\".to_string(),\n                    ));\n                *reject.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;\n                return Err(reject);\n            }\n            let origin = req\n                .headers()\n"
+    },
+    {
+      "path": "cli/src/native/stream/websocket.rs",
+      "before": "                let msg_type = parsed.get(\"type\").and_then(|v| v.as_str()).unwrap_or(\"\");\n                if msg_type == \"config\" {\n",
+      "after": "                let msg_type = parsed.get(\"type\").and_then(|v| v.as_str()).unwrap_or(\"\");\n                if !crate::job_assistant::allowed_message(crate::job_assistant::is_embedded(), msg_type) {\n                    break;\n                }\n                if msg_type == \"config\" {\n"
+    },
+    {
+      "path": "cli/src/connection.rs",
+      "before": "    let mut json_str = serde_json::to_string(cmd).map_err(|e| SendError::NotSent(e.to_string()))?;\n",
+      "after": "    let wire = crate::job_assistant::command_with_auth(cmd).map_err(SendError::NotSent)?;\n    let mut json_str = serde_json::to_string(&wire).map_err(|e| SendError::NotSent(e.to_string()))?;\n"
+    },
+    {
+      "path": "cli/src/native/daemon.rs",
+      "before": "                let cmd: Value = match serde_json::from_str(trimmed) {\n",
+      "after": "                let mut cmd: Value = match serde_json::from_str(trimmed) {\n"
+    },
+    {
+      "path": "cli/src/native/daemon.rs",
+      "before": "                idle_activity.mark();\n\n                let action = cmd\n",
+      "after": "                if !crate::job_assistant::take_command_auth(&mut cmd) {\n                    let _ = writer.write_all(b\"{\\\"success\\\":false,\\\"error\\\":\\\"Unauthorized\\\"}\\n\").await;\n                    break;\n                }\n                idle_activity.mark();\n\n                let action = cmd\n"
+    },
+    {
+      "path": "cli/src/native/daemon.rs",
+      "before": "    let _ = fs::write(&version_path, env!(\"CARGO_PKG_VERSION\"));\n",
+      "after": "    let _ = fs::write(&version_path, crate::job_assistant::daemon_marker());\n"
+    },
+    {
+      "path": "cli/src/connection.rs",
+      "before": "        Ok(v) => v.trim() == env!(\"CARGO_PKG_VERSION\"),\n",
+      "after": "        Ok(v) => v.trim() == crate::job_assistant::daemon_marker(),\n"
+    },
+    {
+      "path": "cli/src/main.rs",
+      "before": "    let mut clean = clean_args(&args);\n",
+      "after": "    let mut clean = clean_args(&args);\n    if job_assistant::is_embedded() && clean.first().is_some_and(|arg| arg == \"dashboard\") {\n        eprintln!(\"Standalone dashboard is disabled in embedding mode\");\n        exit(2);\n    }\n"
+    },
+    {
+      "path": "cli/src/connection.rs",
+      "before": "pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult, String> {\n",
+      "after": "pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult, String> {\n    if crate::job_assistant::existing_daemon_only() {\n        if !daemon_ready(session) || !daemon_version_matches(session) {\n            return Err(\"Bound browser daemon is unavailable or credentials changed; reconnect explicitly\".to_string());\n        }\n        return ready_existing_daemon_result(session, opts, Duration::from_secs(1))\n            .ok_or_else(|| \"Bound browser daemon settings changed; reconnect explicitly\".to_string());\n    }\n"
+    },
+    {
+      "path": "cli/src/native/actions.rs",
+      "before": "        if !apply_tab_binding_on_attach_or_rollback(state).await? {\n            if let Err(e) = open_fresh_tab_for_auto_connect(state).await {\n",
+      "after": "        if !apply_tab_binding_on_attach_or_rollback(state).await?\n            && !crate::job_assistant::is_embedded()\n        {\n            if let Err(e) = open_fresh_tab_for_auto_connect(state).await {\n"
+    },
+    {
+      "path": "cli/src/native/browser.rs",
+      "before": "        if page_targets.is_empty() {\n            // Create a new tab\n",
+      "after": "        if page_targets.is_empty() {\n            if crate::job_assistant::is_embedded() && self.browser_process.is_none() {\n                return Err(\"No eligible existing browser tab found; open a page in Chrome and reconnect\".to_string());\n            }\n            // Create a new tab\n"
+    },
+    {
+      "path": "cli/src/native/browser.rs",
+      "before": "        if dialog_session == Some(session_id) {\n            return Ok(RendererState::DialogBlocked);\n        }\n        match tokio::time::timeout(",
+      "after": "        if dialog_session == Some(session_id) {\n            return Ok(RendererState::DialogBlocked);\n        }\n        if crate::job_assistant::is_embedded() {\n            return Err(\"Chrome 标签页暂未响应或已休眠，请在 Chrome 中恢复该标签页后再继续\".to_string());\n        }\n        match tokio::time::timeout("
+    },
+    {
+      "path": "cli/src/native/browser.rs",
+      "before": "        // Bring tab to front\n        let _ = self\n            .client\n            .send_command(\"Page.bringToFront\", None, Some(&session_id))\n            .await;",
+      "after": "        if !crate::job_assistant::is_embedded() {\n            let _ = self.bring_to_front().await;\n        }"
+    },
+    {
+      "path": "cli/src/native/browser.rs",
+      "before": "        self.client\n            .send_command_no_params(\"Runtime.enable\", Some(session_id))\n            .await?;\n",
+      "after": "        if !crate::job_assistant::is_embedded() {\n            self.client\n                .send_command_no_params(\"Runtime.enable\", Some(session_id))\n                .await?;\n        }\n"
+    },
+    {
+      "path": "cli/src/native/browser.rs",
+      "before": "        self.client\n            .send_command_no_params(\"Runtime.enable\", None)\n            .await?;\n",
+      "after": "        if !crate::job_assistant::is_embedded() {\n            self.client\n                .send_command_no_params(\"Runtime.enable\", None)\n                .await?;\n        }\n"
+    },
+    {
+      "path": "cli/src/native/actions.rs",
+      "before": "    client\n        .send_command_no_params(\"Runtime.enable\", Some(session_id))\n        .await?;\n",
+      "after": "    if !crate::job_assistant::is_embedded() {\n        client\n            .send_command_no_params(\"Runtime.enable\", Some(session_id))\n            .await?;\n    }\n"
+    },
+    {
+      "path": "cli/src/native/state.rs",
+      "before": "    client\n        .send_command_no_params(\"Runtime.enable\", Some(temp_session))\n        .await?;\n",
+      "after": "    if !crate::job_assistant::is_embedded() {\n        client\n            .send_command_no_params(\"Runtime.enable\", Some(temp_session))\n            .await?;\n    }\n"
+    }
+  ]
+}

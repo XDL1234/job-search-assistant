@@ -7,7 +7,13 @@ from pathlib import Path
 from .store import now
 
 
-def queue_control(store, request):
+def cancel_pending_actions(store, run_id):
+    # claim_action 同样取得写锁，状态仍为 pending 的动作尚未取得执行权。
+    store.conn.execute("""UPDATE actions SET status='not_done',reason=?,updated=?
+        WHERE run_id=? AND status='pending'""", ('任务暂停或停止，操作尚未领取', now(), run_id))
+
+
+def queue_control(store, request, *, cancel_unclaimed=False):
     run_id, action = request['run_id'], request['action']
     if action not in ('paused', 'running', 'watching', 'stopped'):
         raise ValueError('不支持的控制指令')
@@ -16,10 +22,14 @@ def queue_control(store, request):
         store.conn.execute('BEGIN IMMEDIATE')
         if store.one('runs', run_id)['status'] == 'stopped':
             raise ValueError('已停止的运行不能恢复')
+        from .app_decisions import advance_control
+        advance_control(store, run_id)
         store.conn.execute("UPDATE panel_commands SET status='cancelled',updated=? WHERE run_id=? AND status='pending'", (stamp, run_id))
         immediate = action in ('paused', 'stopped')
         if immediate:
             store.conn.execute('UPDATE runs SET status=? WHERE id=?', (action, run_id))
+            if cancel_unclaimed:
+                cancel_pending_actions(store, run_id)
         store.conn.execute('INSERT INTO panel_commands VALUES (?,?,?,?,?,?,?)',
                            (identity, run_id, action, 'applied' if immediate else 'pending', '', stamp, stamp))
     return {'id': identity, 'status': 'applied' if immediate else 'pending'}

@@ -10,12 +10,38 @@ export type UiMethod =
   | "extract_profile"
   | "save_profile"
   | "get_profile"
+  | "get_job_preferences"
+  | "save_job_preferences"
+  | "inspect_company_table"
+  | "open_company_site"
   | "preview_run"
   | "get_reply_settings"
   | "save_reply_settings"
   | "preview_reply"
   | "attention_update"
   | "browser_status";
+export type EmploymentType = "internship" | "campus" | "full_time" | "part_time" | "any";
+export interface BossFilters {
+  city?: string;
+  province?: string;
+  district?: string;
+  business_area?: string;
+  metro_line?: string;
+  metro_station?: string;
+  query?: string;
+  positions?: string[][];
+  salary?: string;
+  experience?: string;
+  degree?: string;
+  industries?: string[];
+  company_size?: string;
+  financing?: string;
+}
+export interface JobPreferences {
+  target_roles: string[];
+  employment_type: EmploymentType;
+  boss_filters: BossFilters;
+}
 export interface TaskConfig {
   channels: string[];
   target_roles: string[];
@@ -24,8 +50,11 @@ export interface TaskConfig {
   execution_mode: string;
   max_contacts: number;
   filters: string;
+  cities?: string[];
+  boss_filters?: BossFilters;
   window_title: string;
   company_table?: string;
+  reviewed_company_table_sha256?: string;
   company_rows?: { company: string; url: string; source_row: number }[];
   resume_path?: string;
   profile_version?: string;
@@ -41,12 +70,22 @@ export interface Run {
   id: string;
   status: string;
   created: string;
+  started_at?: string | null;
+  updated_at?: string | null;
   config: {
     target_roles: string[];
     channels: string[];
     simulation?: boolean;
     execution_mode?: string;
     employment_type?: string;
+    boss_mode?: string;
+    boss_filters?: BossFilters;
+    cities?: string[];
+    filters?: string;
+    max_contacts?: number;
+    poll_seconds?: number;
+    window_title?: string;
+    company_table?: string;
   };
 }
 export interface Attempt {
@@ -57,7 +96,28 @@ export interface Attempt {
   channel: string;
   status: string;
   reason: string;
+  url?: string;
+  started?: string | null;
   updated: string;
+}
+export interface RecordedAction {
+  id?: string;
+  run_id?: string;
+  attempt_id: string;
+  kind: string;
+  status: string;
+  evidence_id?: string | null;
+  reason?: string;
+  updated: string;
+}
+export interface JobReview {
+  company: string;
+  job: string;
+  city?: string;
+  url?: string;
+  salary?: string;
+  facts?: string[];
+  reason: string;
 }
 export interface Snapshot {
   runs: Run[];
@@ -67,9 +127,15 @@ export interface Snapshot {
     subject: string;
     reason: string;
     resolved: number;
+    created?: string;
+    job_review?: JobReview;
   }[];
-  messages?: { conversation_id: string; message_key: string; text: string }[];
-  conversations?: { id: string; status: string; latest_message: string; reason: string }[];
+  messages?: { conversation_id: string; message_key: string; text: string; created?: string }[];
+  conversations?: { id: string; status: string; latest_message: string; reason: string; updated?: string }[];
+  notes?: { id: string; attention_id: string; message_key: string; text: string; created: string }[];
+  actions?: RecordedAction[];
+  run_attempts?: { run_id: string; attempt_id: string }[];
+  activity?: { run_id: string; operation: string; phase: string; updated?: string; fresh_after?: number | null }[];
   reply_targets?: { run_id: string; conversation: string; attempt_id: string; message_key: string; text: string }[];
   fields: {
     attempt_id: string;
@@ -78,14 +144,14 @@ export interface Snapshot {
     source: string;
     evidence_id: string | null;
   }[];
-  evidence: { id: string; attempt_id: string; kind: string }[];
+  evidence: { id: string; attempt_id: string; kind: string; created?: string }[];
   sessions?: {
     run_id: string;
     thread_id: string | null;
     state: string;
     error: string;
   }[];
-  frame: { id: string; captured_at: number; title: string } | null;
+  frame: { id: string; captured_at: number; title: string; run_id?: string } | null;
 }
 export interface Connection {
   state:
@@ -104,4 +170,13 @@ export interface ExecutorEvent {
   seq: number;
   type: "state" | "message" | "attention" | "error";
   payload: Record<string, unknown>;
+}
+
+export interface BrowserState {
+  connected: boolean;
+  installed?: boolean;
+  pinned_target?: string | null;
+  url?: string | null;
+  tabs?: { targetId: string; title?: string; url: string }[];
+  preview_state?: string;
 }

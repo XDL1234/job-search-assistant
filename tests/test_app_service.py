@@ -38,6 +38,17 @@ class AppServiceTests(unittest.TestCase):
         self.assertEqual(before, self.store.conn.total_changes)
         self.assertEqual(self.store.conn.execute('SELECT COUNT(*) FROM actions').fetchone()[0], 0)
 
+    def test_task_timing_uses_first_applied_start_and_latest_confirmed_activity(self):
+        run = self.store.create_run({'channels': ['web']}, '测试授权')
+        with self.store.conn:
+            self.store.conn.executemany('INSERT INTO panel_commands VALUES (?,?,?,?,?,?,?)', [
+                ('cancelled', run, 'running', 'cancelled', '', '2026-01-01', '2026-01-01'),
+                ('started', run, 'running', 'applied', '', '2026-01-02', '2026-01-02'),
+                ('paused', run, 'paused', 'applied', '', '2026-01-03', '2026-01-03'),
+            ])
+        row = self.call('snapshot')['result']['runs'][0]
+        self.assertEqual((row['started_at'], row['updated_at']), ('2026-01-02', '2026-01-03'))
+
     def test_envelope_validation(self):
         for request in [None, {}, {'id': 'x', 'method': 'snapshot', 'params': []}]:
             self.assertFalse(self.handle(self.store, request)['ok'])
@@ -46,6 +57,21 @@ class AppServiceTests(unittest.TestCase):
         result = self.call('export_records')
         self.assertTrue(result['ok'])
         self.assertTrue(Path(result['result']['path']).is_file())
+
+    def test_export_to_selected_absolute_excel_path(self):
+        from openpyxl import load_workbook
+        target = Path(self.temp.name).resolve() / '指定导出位置.xlsx'
+        target.write_bytes(b'previous workbook')
+        result = self.call('export_records_to', destination=str(target))
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(Path(result['result']['path']), target)
+        with target.open('rb') as source:
+            self.assertIn('BOSS记录', load_workbook(source).sheetnames)
+        self.assertFalse((self.store.root / 'results.xlsx').exists())
+        self.assertFalse(self.call('export_records_to', destination='relative.xlsx')['ok'])
+        invalid = target.with_suffix('.txt')
+        self.assertFalse(self.call('export_records_to', destination=str(invalid))['ok'])
+        self.assertFalse(invalid.exists())
 
     def test_image_requires_record_identity(self):
         result = self.call('read_image', kind='frame', identity='../profile')

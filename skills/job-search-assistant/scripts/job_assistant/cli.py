@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .bootstrap import SKILL_ROOT, default_root, install_skill, setup
-from .inputs import digest_file, load_json, read_companies, validate_config
+from .inputs import digest_file, inspect_company_table, load_json, read_companies, valid_company_rows, validate_config
 from .policy import decide_reply, select_job
 from .store import Store, now, packed
 
@@ -25,6 +25,23 @@ def verify_materials(store, run_id):
 
 def prepare_config(value):
     config = validate_config(dict(value))
+    cities = config.get('cities', [])
+    if (not isinstance(cities, list) or len(cities) > 20
+            or any(not isinstance(city, str) or not 1 <= len(city.strip()) <= 40 for city in cities)):
+        raise ValueError('cities 必须是最多20项的城市字符串数组，每项为1至40字符')
+    if 'cities' in config:
+        config['cities'] = [city.strip() for city in cities]
+    if 'boss_filters' in config:
+        from .job_preferences import JOB_TYPES, normalize_filters
+        employment = config.get('employment_type')
+        if config['channels'] != ['boss'] or employment not in JOB_TYPES:
+            raise ValueError('自动设置平台筛选需要单独的 BOSS 任务与明确的求职类型')
+        filters = config['boss_filters'] = normalize_filters(config['boss_filters'], employment)
+        if 'city' in filters:
+            city = filters['city']
+            if any(item.removesuffix('市') != city.removesuffix('市') for item in cities):
+                raise ValueError('自动设置的城市与本轮沟通城市不一致')
+            config['cities'] = [city]
     for label in ('resume', 'profile'):
         path = Path(config.get(label + '_path', '')).resolve()
         if not path.is_file():
@@ -35,8 +52,18 @@ def prepare_config(value):
         raise ValueError('个人资料需先归一化为 JSON 对象')
     if 'web' in config['channels']:
         config['company_table'] = str(Path(config['company_table']).resolve(strict=True))
-        config['company_table_sha256'] = digest_file(config['company_table'])
-        companies = read_companies(config['company_table'], config.get('columns'), config.get('sheet'))
+        table_args = (config['company_table'], config.get('columns'), config.get('sheet'))
+        if 'reviewed_company_table_sha256' in config:
+            review = inspect_company_table(*table_args)
+            if review['sha256'] != config['reviewed_company_table_sha256']:
+                raise ValueError('公司表已变更，请重新导入并核对')
+            config['company_table_sha256'] = review['sha256']
+            companies = valid_company_rows(review)
+            if not companies:
+                raise ValueError('公司表没有可用的申请网址，请先补全')
+        else:
+            config['company_table_sha256'] = digest_file(config['company_table'])
+            companies = read_companies(*table_args)
         selected = config.get('companies') or [r['company'] for r in companies]
         if not set(selected) <= {r['company'] for r in companies}:
             raise ValueError('本轮公司名单包含表格之外的公司')
@@ -217,7 +244,6 @@ def main(argv=None):
     install = commands.add_parser('install', help='将自包含 Skill 安装到用户目录，不覆盖已有不同版本')
     install.add_argument('--destination', type=Path, default=Path.home() / '.agents/skills/job-search-assistant')
     commands.add_parser('doctor', help='验证依赖、数据库及 Excel 写入，不移动鼠标')
-    commands.add_parser('browser-bridge', help='启动应用与浏览器扩展的本机桥接')
     dashboard = commands.add_parser('dashboard', help='启动仅本机可访问的可视化面板，不启动投递执行器')
     dashboard.add_argument('--port', type=int, default=0, help='默认自动分配空闲端口')
     dashboard.add_argument('--open', action='store_true', help='打开浏览器面板')
@@ -228,10 +254,6 @@ def main(argv=None):
         if args.command == 'dashboard':
             from .dashboard import serve
             serve(args.root, args.port, args.open)
-            return 0
-        if args.command == 'browser-bridge':
-            from .browser_bridge import serve
-            serve(args.root)
             return 0
         if args.command == 'bootstrap':
             result = setup(args.root, args.install)

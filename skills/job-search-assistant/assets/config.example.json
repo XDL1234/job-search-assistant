@@ -4,6 +4,7 @@
   "profile_path": "C:/求职/个人信息.json",
   "resume_path": "C:/求职/简历.pdf",
   "target_roles": ["嵌入式软件工程师"],
+  "cities": ["深圳"],
   "boss_mode": "screened",
   "max_contacts": 20,
   "unknown_reply_mode": "ai",

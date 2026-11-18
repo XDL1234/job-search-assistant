@@ -1,6 +1,7 @@
 """输入归一化，不改写用户提供的源文件。"""
 import csv
 import hashlib
+import io
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,28 +18,37 @@ def load_json(path):
 def web_url(value):
     value = str(value or '').strip()
     parsed = urlsplit(value)
-    if parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username or parsed.password:
+    if (parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or any(c.isspace() or ord(c) < 32 for c in value)):
         raise ValueError('网站必须为无内嵌凭据的 HTTP/HTTPS 地址')
+    if parsed.port == 0:
+        raise ValueError('网站端口无效')
     return value
 
 
-def read_companies(path, columns=None, sheet=None):
-    path = Path(path)
+def inspect_company_table(path, columns=None, sheet=None):
+    path = Path(path).resolve()
     aliases = {'company': ['公司名称', '公司', 'company'], 'url': ['申请网站', '网申地址', '招聘网址', 'url'],
                'job': ['岗位', '岗位名称', 'job']}
+    if path.suffix.lower() not in ('.csv', '.xlsx'):
+        raise ValueError('只支持 .xlsx 或 UTF-8 CSV；请先转换旧版 .xls')
+    content = path.read_bytes()
     if path.suffix.lower() == '.csv':
-        with path.open(encoding='utf-8-sig', newline='') as stream:
-            rows = list(csv.reader(stream))
-    elif path.suffix.lower() == '.xlsx':
+        rows = list(csv.reader(io.StringIO(content.decode('utf-8-sig'), newline='')))
+    else:
         from openpyxl import load_workbook
-        book = load_workbook(path, read_only=True, data_only=True)
+        from zipfile import BadZipFile
         try:
+            book = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        except (BadZipFile, OSError) as error:
+            raise ValueError('无法读取 Excel 文件，请确认是有效的 .xlsx 表格') from error
+        try:
+            if sheet and sheet not in book.sheetnames:
+                raise ValueError('找不到指定的工作表')
             page = book[sheet] if sheet else book.active
             rows = list(page.values)
         finally:
             book.close()
-    else:
-        raise ValueError('只支持 .xlsx 或 UTF-8 CSV；请先转换旧版 .xls')
     if not rows:
         raise ValueError('公司表格为空')
     headers = [str(v or '').strip() for v in rows[0]]
@@ -57,18 +67,44 @@ def read_companies(path, columns=None, sheet=None):
         if not any(v is not None and str(v).strip() for v in row):
             continue
         record = {key: str(row[i] or '').strip() if i < len(row) else '' for key, i in indices.items()}
+        record['source_row'] = number
+        problem = ''
         if not record['company']:
-            raise ValueError(f'第 {number} 行公司名称为空')
-        record['url'] = web_url(record['url'])
+            problem = '缺少公司名称'
+        elif not record['url']:
+            problem = '缺少网址'
+        else:
+            try:
+                record['url'] = web_url(record['url'])
+            except ValueError:
+                problem = '网址格式无效'
         key = (record['company'], record['url'], record.get('job', ''))
-        if key not in seen:
-            result.append({**record, 'source_row': number})
+        if problem:
+            result.append({**record, 'status': 'invalid', 'reason': problem})
+        elif key in seen:
+            result.append({**record, 'status': 'duplicate', 'reason': '公司、网址和岗位重复'})
+        else:
+            result.append({**record, 'status': 'valid', 'reason': ''})
             seen.add(key)
-    return result
+    return {'path': str(path), 'name': path.name, 'sha256': hashlib.sha256(content).hexdigest(), 'rows': result}
+
+
+def valid_company_rows(inspection):
+    return [{key: value for key, value in row.items() if key not in ('status', 'reason')}
+            for row in inspection['rows'] if row['status'] == 'valid']
+
+
+def read_companies(path, columns=None, sheet=None):
+    inspection = inspect_company_table(path, columns, sheet)
+    invalid = next((row for row in inspection['rows'] if row['status'] == 'invalid'), None)
+    if invalid:
+        raise ValueError(f"第 {invalid['source_row']} 行{invalid['reason']}")
+    return valid_company_rows(inspection)
 
 
 def validate_config(config):
-    if 'employment_type' in config and config['employment_type'] not in ('internship', 'campus', 'full_time'):
+    from .job_preferences import JOB_TYPES
+    if 'employment_type' in config and (not isinstance(config['employment_type'], str) or config['employment_type'] not in JOB_TYPES):
         raise ValueError('求职类型不支持')
     if not config.get('channels') or not set(config['channels']) <= {'web', 'boss'}:
         raise ValueError('channels 必须包含 web 或 boss')

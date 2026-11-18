@@ -21,6 +21,6 @@ python -X utf8 "tools/build_desktop.py" --reuse-resources
 
 本机安装启动检查脚本：`python -X utf8 "tests/desktop_install_smoke.py" --shortcut "桌面快捷方式的完整路径"`。脚本临时移除开发环境变量，通过快捷方式启动实际安装版，验证首页与导出后关闭，不创建投递任务。`--connect` 仅在发布后用于检查真实 Codex 连接；不触发模型推理和消息发送。
 
-beta.2 开始，安装包另含 `browser-extension`。构建前先缓存已验证的 Codex 来源，再清理自身生成的 worker/Codex/许可证/扩展目录，避免增量复制留下旧文件；清理路径必须解析在本项目资源目录内部。连接器首次在 Chrome 加载需要用户操作，安装器不修改浏览器策略。
+新浏览器底座随包提供固定的 agent-browser 原生可执行文件、许可证、补丁说明和运行时清单，取消 `browser-extension` 分发。先运行 `tools/build_agent_browser.py` 构建固定来源，再准备桌面资源；`--reuse-resources` 会核验 Skill 源指纹、worker 哈希、原生运行时能力及全量资源清单，不会复用已过期工作进程。清理路径必须解析在本项目资源目录内部；构建只打包白名单，不读取浏览器登录目录或 `.codex` 凭据。
 
 配置页实际窗口回归：先运行 Vite 并构建 debug 原生程序，再运行 `python "tests/desktop_configuration_smoke.py" --profile "本机资料文件" --resume "附件文件"`。此检查只操作本应用的资料、九种配置预览、规则验证和连接器设置，不点击真实招聘网站。测试数据和截图只写入 `.verification`。

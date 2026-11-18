@@ -187,6 +187,10 @@ em {
   padding: 8px;
   display: flex;
 }
+.sidebar nav {
+  min-height: 0;
+  overflow-y: auto;
+}
 .nav-item {
   width: 100%;
   display: flex;
@@ -216,6 +220,7 @@ em {
 }
 .sidebar-bottom {
   margin-top: auto;
+  flex-shrink: 0;
 }
 .account {
   display: flex;
@@ -281,6 +286,28 @@ header {
 header p {
   font-size: 16px;
   margin: 0;
+}
+.home-heading,
+.history-filters,
+.history-filters label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.home-heading,
+.history-toolbar,
+.history-filters {
+  flex-wrap: wrap;
+}
+.home-heading time {
+  color: #65738b;
+  white-space: nowrap;
+}
+.history-filters input[type="date"] {
+  border: 1px solid #dfe5ee;
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: white;
 }
 .button {
   display: inline-flex;
@@ -729,6 +756,11 @@ td p {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+@media (max-height: 780px) {
+  .sidebar .nav-item {
+    padding-block: 11px;
   }
 }
 @media (max-width: 1150px) {

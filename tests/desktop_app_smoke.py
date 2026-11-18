@@ -57,6 +57,7 @@ def focus_simulation(title):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--app', type=Path, default=ROOT/'apps/desktop/src-tauri/target/debug/job-search-desktop.exe')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--lifecycle', action='store_true', help='验证启动即暂停、恢复与关闭，不消耗模型推理额度')
     parser.add_argument('--protocol-fixture', action='store_true', help='使用离线协议替身验证故障路径，不代表真实模型验收')
@@ -80,7 +81,7 @@ def main():
     env['JOB_ASSISTANT_DATA_DIR'] = str(folder / 'data')
     env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = f'--remote-debugging-port={port}'
     env['WEBVIEW2_USER_DATA_FOLDER'] = str(folder / 'webview')
-    process = subprocess.Popen([str(ROOT / 'apps/desktop/src-tauri/target/debug/job-search-desktop.exe')], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen([str(args.app.resolve())], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(json.dumps({'folder': str(folder), 'pid': process.pid, 'port': port}), flush=True)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     report = {'ui': False, 'connection': False, 'execution': 'not_requested'}
@@ -100,11 +101,14 @@ def main():
             page = browser.contexts[0].pages[0]
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
-            expect(page.get_by_role('heading', name='今天，开始新的机会')).to_be_visible(timeout=30000)
+            expect(page.get_by_role('heading', name='今天的求职进展')).to_be_visible(timeout=30000)
             expect(page.get_by_text('浏览器界面预览，执行器未连接。')).to_have_count(0)
-            expect(page.get_by_role('navigation', name='主导航').get_by_role('button')).to_have_count(8)
+            navigation = page.get_by_role('navigation', name='主导航')
+            expect(navigation.get_by_role('button')).to_have_count(4)
+            expect(navigation.get_by_role('button', name='投递任务', exact=True)).to_be_visible()
             page.screenshot(path=str(folder / '01-home.png'))
-            page.get_by_role('button', name='设置与帮助', exact=True).click()
+            page.locator('.sidebar').get_by_role('button', name='设置', exact=True).click()
+            page.get_by_role('button', name='连接与诊断', exact=True).click()
             page.get_by_role('button', name='连接 Codex', exact=True).click()
             if args.close_connecting:
                 for _ in range(100):
@@ -125,14 +129,14 @@ def main():
                     assert code.value!=259, f'初始化子进程 {child_pid} 仍存活'
                 report['close_during_connect']='passed'
                 return
-            expect(page.locator('.topline').get_by_role('button', name='Codex 已连接', exact=True)).to_be_visible(timeout=90000)
+            expect(page.locator('.workspace-topbar').get_by_role('button', name='Codex 已连接', exact=True)).to_be_visible(timeout=90000)
             report['connection'] = True
             page.screenshot(path=str(folder / '02-connection.png'))
-            page.get_by_role('button', name='新建本地演示', exact=True).click()
+            page.get_by_role('button', name='运行本地演示', exact=True).click()
             expect(page.get_by_role('dialog', name='确认本轮模拟任务')).to_be_visible()
             page.get_by_role('button', name='确认范围，创建任务', exact=True).click()
-            expect(page.get_by_role('heading', name='执行工作台', exact=True)).to_be_visible()
-            expect(page.get_by_text('已暂停', exact=True)).to_be_visible(timeout=15000)
+            expect(page.get_by_role('heading', name='本地演示任务', exact=True)).to_be_visible()
+            expect(page.get_by_role('button', name='开始 / 恢复', exact=True)).to_be_enabled(timeout=15000)
             page.screenshot(path=str(folder / '03-running.png'))
             report['ui'] = True
             assert not errors, errors
@@ -202,7 +206,7 @@ def main():
                 with closing(sqlite3.connect(folder / 'data/records.sqlite3')) as db:
                     assert db.execute('SELECT status FROM runs').fetchone()[0]=='paused'
                     assert db.execute('SELECT COUNT(*) FROM actions').fetchone()[0]==0
-                process=subprocess.Popen([str(ROOT / 'apps/desktop/src-tauri/target/debug/job-search-desktop.exe')],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                process=subprocess.Popen([str(args.app.resolve())],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 time.sleep(8)
                 assert process.poll() is None, '重启应用失败'
                 with closing(sqlite3.connect(folder / 'data/records.sqlite3')) as db:

@@ -1,159 +1,112 @@
 import { useCallback, useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  ArrowRight,
-  Bell,
-  BriefcaseBusiness,
-  Check,
-  Clock3,
-  FileText,
-  FolderOpen,
-  House,
-  LoaderCircle,
-  MessageSquare,
-  Monitor,
-  Pause,
-  Play,
-  RefreshCw,
-  Search,
-  Send,
-  Settings,
-  ShieldCheck,
-  Square,
-  Target,
-  UserRound,
-  Users,
-  X,
-} from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { BriefcaseBusiness, ChevronRight, ClipboardCheck, FileText, House, Minus, Send, Settings, Square, X } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { native, request } from "./bridge";
 import packageInfo from "../package.json";
-import { Profile } from "./pages/Profile";
 import { TaskSetup } from "./pages/TaskSetup";
-import { Replies } from "./pages/Replies";
-import { Inbox } from "./pages/Inbox";
-import type { Connection, ExecutorEvent, Snapshot } from "./contracts";
+import { Inbox, attentionCategory } from "./pages/Inbox";
+import { SettingsPage, ConnectionDiagnostics, type SettingsTab, type BrowserDiagnostic } from "./pages/SettingsPage";
+import { TasksPage } from "./pages/TasksPage";
+import { Records } from "./pages/Records";
+import { Overview, type OverviewCategory } from "./pages/Overview";
+import { Workbench, type ExecutionLine } from "./pages/Workbench";
+import { isActiveRun } from "./workspace";
+import type { BrowserState, Connection, ExecutorEvent, Run, Snapshot } from "./contracts";
 
 const navigation = [
-  ["home", "首页", House],
-  ["profile", "我的资料", UserRound],
-  ["companies", "公司网申", FileText],
-  ["boss", "BOSS 投递", Send],
-  ["replies", "自动回复", MessageSquare],
-  ["running", "执行工作台", Monitor],
-  ["inbox", "消息中心", Bell],
-  ["history", "投递记录", Clock3],
+  ["home", "总览", House],
+  ["tasks", "投递任务", Send],
+  ["inbox", "待办", ClipboardCheck],
+  ["history", "投递记录", FileText],
 ] as const;
-type Page = (typeof navigation)[number][0] | "settings";
-const empty: Snapshot = {
-  runs: [],
-  attempts: [],
-  attention: [],
-  fields: [],
-  evidence: [],
-  frame: null,
-};
-const statusText: Record<string, string> = {
-  running: "执行中",
-  watching: "回复值守",
-  paused: "已暂停",
-  stopped: "已停止",
-  in_progress: "处理中",
-  success: "已投递",
-  uncertain: "待核查",
-  failed: "失败",
-  needs_user: "待处理",
-  ready: "已连接",
-  disconnected: "未连接",
-  connecting: "连接中",
-  login_required: "请登录",
-  logging_in: "等待登录",
-  not_installed: "未安装",
-  error: "连接异常",
-};
+type Page = (typeof navigation)[number][0] | "settings" | "boss" | "companies" | "running";
+const empty: Snapshot = { runs: [], attempts: [], attention: [], fields: [], evidence: [], frame: null };
+const taskPages = new Set<Page>(["tasks", "boss", "companies", "running"]);
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("profile");
+  const [todoCategory, setTodoCategory] = useState<OverviewCategory>();
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
   const [connection, setConnection] = useState<Connection>({
     state: "disconnected",
-    message: "连接 Codex 后，可在应用中执行任务",
+    message: "AI 模式需要连接 Codex。脚本模式无需模型。",
   });
+  const [browser, setBrowser] = useState<BrowserState>({ connected: false });
+  const [diagnostic, setDiagnostic] = useState<BrowserDiagnostic>();
+  const [profileReady, setProfileReady] = useState<boolean>();
   const [runId, setRunId] = useState("");
+  const [editingRun, setEditingRun] = useState<Run>();
+  const [runProblem, setRunProblem] = useState<{ id: string; text: string }>();
+  const [startingRun, setStartingRun] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<{ ticket: string } | null>(null);
-  const [frame, setFrame] = useState("");
   const [image, setImage] = useState("");
-  const [messages, setMessages] = useState<{ runId: string; text: string }[]>(
-    [],
-  );
-  const [search, setSearch] = useState("");
-  const [detail, setDetail] = useState("");
-  const [browserCode, setBrowserCode] = useState("");
+  const [savedFrame, setSavedFrame] = useState<{ id: string; url: string }>();
+  const [messages, setMessages] = useState<ExecutionLine[]>([]);
+  const desktop = isTauri();
+  const run = snapshot.runs.find((value) => value.id === runId);
+  const frameId = page === "running" && snapshot.frame?.run_id === runId ? snapshot.frame?.id : undefined;
+  const browserInUse = snapshot.runs.some(isActiveRun);
+  const browserReady = Boolean(browser.connected && browser.pinned_target);
   const refresh = useCallback(async () => {
     if (!isTauri()) return;
     try {
       setSnapshot(await request<Snapshot>("snapshot", { run_id: runId }));
-    } catch (e) {
-      setError(String(e));
+    } catch (failure) {
+      setError(String(failure));
     }
   }, [runId]);
+  const loadProfile = useCallback(() => {
+    if (!isTauri()) return;
+    void request("get_profile").then((profile) => setProfileReady(Boolean(profile))).catch(() => setProfileReady(undefined));
+  }, []);
+  useEffect(loadProfile, [loadProfile]);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [page]);
   useEffect(() => {
     void refresh();
     if (!isTauri()) return;
-    void native<Connection>("codex_status")
-      .then(setConnection)
-      .catch((e) => setError(String(e)));
     const timer = window.setInterval(() => void refresh(), 2500);
-    const subscriptions = [
-      listen<Connection>("codex-status", (e) => setConnection(e.payload)),
-      listen<ExecutorEvent>("executor-event", (e) => {
-        if (e.payload.type === "message")
-          setMessages((rows) =>
-            [
-              ...rows,
-              {
-                runId: e.payload.runId,
-                text: String(e.payload.payload.text || ""),
-              },
-            ].slice(-300),
-          );
-        if (e.payload.type === "error")
-          setError(String(e.payload.payload.message || "执行已暂停"));
-        if (e.payload.type !== "message") void refresh();
-      }),
-    ];
+    const subscription = listen<ExecutorEvent>("executor-event", (event) => {
+      const { runId: id, type, payload, seq } = event.payload;
+      if (type === "message" && payload.text) {
+        const row = { runId: id, text: String(payload.text), at: new Date().toISOString(), key: seq };
+        setMessages((rows) => [...rows, row].slice(-300));
+      }
+      if (type === "error" || type === "state" && payload.state !== "starting") {
+        setStartingRun((current) => current === id ? "" : current);
+      }
+      if (type === "error") setRunProblem({ id, text: String(payload.message || "执行已暂停") });
+      if (type !== "message") void refresh();
+    });
     return () => {
       window.clearInterval(timer);
-      subscriptions.forEach((p) => void p.then((unlisten) => unlisten()));
+      void subscription.then((unlisten) => unlisten());
     };
   }, [refresh]);
   useEffect(() => {
-    if (!runId && snapshot.runs[0]) setRunId(snapshot.runs[0].id);
-  }, [snapshot, runId]);
+    if (!isTauri()) return;
+    void native<Connection>("codex_status").then(setConnection).catch((failure) => setError(String(failure)));
+    void native<BrowserState>("browser_runtime_status").then(setBrowser).catch((failure) => setError(String(failure)));
+    const subscription = listen<Connection>("codex-status", (event) => setConnection(event.payload));
+    return () => { void subscription.then((unlisten) => unlisten()); };
+  }, []);
   useEffect(() => {
-    let cancelled = false;
-    if (!snapshot.frame) {
-      setFrame("");
-      return;
-    }
-    void request<{ url: string }>("read_image", {
-      kind: "frame",
-      identity: snapshot.frame.id,
-    })
-      .then((value) => {
-        if (!cancelled) setFrame(value.url);
-      })
-      .catch(() => {
-        if (!cancelled) setFrame("");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [snapshot.frame?.id]);
+    if (!frameId) return;
+    let active = true;
+    void request<{ url: string }>("read_image", { kind: "frame", identity: frameId }).then((value) => {
+      if (active) setSavedFrame({ id: frameId, url: value.url });
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [frameId]);
+
   const perform = async (action: () => Promise<void>) => {
     setError("");
     setNotice("");
@@ -161,643 +114,125 @@ export default function App() {
     try {
       await action();
       await refresh();
-    } catch (e) {
-      setError(String(e));
+    } catch (failure) {
+      setError(String(failure));
     } finally {
       setBusy(false);
     }
   };
-  const connect = () =>
-    perform(async () =>
-      setConnection(await native<Connection>("codex_connect")),
-    );
-  const demo = () =>
-    perform(async () =>
-      setPreview(await request<{ ticket: string }>("preview_demo")),
-    );
-  const confirmDemo = () =>
-    perform(async () => {
-      if (!preview) return;
-      const created = await request<{ run_id: string }>("start_run", {
-        ticket: preview.ticket,
-        confirmed: true,
-      });
-      setPreview(null);
-      setRunId(created.run_id);
-      setPage("running");
-      await request("open_simulation", { run_id: created.run_id });
-      setNotice(
-        "模拟页面已打开。点击开始后有 5 秒切换时间，请将模拟浏览器置于前台。",
-      );
-    });
-  const control = (action: string) =>
-    perform(async () => {
+  const navigate = (next: Page) => { setNotice(""); setError(""); setPage(next); };
+  const openSettings = (tab: SettingsTab) => { setSettingsTab(tab); navigate("settings"); };
+  const openRun = (id: string) => { setEditingRun(undefined); setRunId(id); navigate("running"); };
+  const openTask = (channel: "boss" | "web" = "boss") => {
+    setEditingRun(undefined);
+    navigate(channel === "boss" ? "boss" : "companies");
+  };
+  const editTask = () => {
+    if (!run) return;
+    setEditingRun(run);
+    navigate(run.config.channels.includes("boss") ? "boss" : "companies");
+  };
+  const demo = () => perform(async () => setPreview(await request<{ ticket: string }>("preview_demo")));
+  const confirmDemo = () => perform(async () => {
+    if (!preview) return;
+    const created = await request<{ run_id: string }>("start_run", { ticket: preview.ticket, confirmed: true });
+    setPreview(null);
+    openRun(created.run_id);
+    await request("open_simulation", { run_id: created.run_id });
+    setNotice("模拟页面已打开。点击开始后有 5 秒切换时间，请将模拟浏览器置于前台。");
+  });
+  const control = (action: string) => perform(async () => {
+    setStartingRun(action === "running" || action === "watching" ? runId : "");
+    setRunProblem(undefined);
+    try {
       await native("executor_control", { runId, action });
-      if (action === "running")
-        setNotice(
-          "任务正在启动。BOSS 浏览器扩展可操作后台标签页；官网和桌面模式请保持目标浏览器在前台。",
-        );
-    });
-  const run = snapshot.runs.find((r) => r.id === runId);
-  const scriptMode = run?.config.execution_mode === "script";
-  const sessionError = snapshot.sessions?.find(
-    (s) => s.run_id === runId,
-  )?.error;
-  const attempts = snapshot.attempts.filter((a) => a.run_id === runId);
-  const attention = snapshot.attention.filter((a) => !a.resolved);
-  const selected = snapshot.attempts.find((a) => a.id === detail);
-  const title = navigation.find((n) => n[0] === page)?.[1] || "设置与帮助";
-  const records = snapshot.attempts.filter((a) =>
-    `${a.company} ${a.job}`.includes(search),
-  );
-  const exportRecords = () =>
-    perform(async () => {
-      const r = await request<{ path: string }>("export_records");
-      setNotice(`记录已导出：${r.path}`);
-    });
+    } catch (failure) {
+      setStartingRun("");
+      setRunProblem({ id: runId, text: failure instanceof Error ? failure.message : String(failure) });
+    }
+  });
+  const exportRecords = () => perform(async () => {
+    const path = await native<string | null>("export_records_dialog");
+    if (path) setNotice(`记录已导出：${path}`);
+  });
+  const selectedNav = taskPages.has(page) ? "tasks" : page;
+  const title = page === "settings" ? "设置" : navigation.find((item) => item[0] === selectedNav)?.[1];
+  const subTitle = editingRun && (page === "boss" || page === "companies") ? "编辑任务"
+    : ({ boss: "BOSS 新建投递", companies: "公司网申", running: "执行工作台" } as Partial<Record<Page, string>>)[page];
+  const attentionCount = snapshot.attention.filter((row) => !row.resolved).length;
+  const windowControl = (command: "minimize" | "toggleMaximize" | "close") => {
+    void getCurrentWindow()[command]().catch((failure) => setError(String(failure)));
+  };
 
-  return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span>
-            <BriefcaseBusiness size={24} />
-          </span>
-          求职助手
+  return (<div className="shell workspace-shell">
+    <aside className="sidebar">
+      <div className="brand" title={`求职助手 ${packageInfo.version}`} data-tauri-drag-region><span><BriefcaseBusiness size={22} /></span>求职助手</div>
+      <nav aria-label="主导航">
+        {navigation.map(([key, label, Icon]) => <button key={key} className={`nav-item ${selectedNav === key ? "selected" : ""}`}
+          aria-current={selectedNav === key ? "page" : undefined} onClick={() => {
+            if (key === "inbox") setTodoCategory(undefined);
+            navigate(key);
+          }}>
+          <Icon size={21} /><span>{label}</span>{key === "inbox" && attentionCount > 0 && <b aria-label={`${attentionCount} 项未处理`}>{attentionCount}</b>}
+        </button>)}
+      </nav>
+      <div className="sidebar-bottom"><button className={`nav-item ${page === "settings" ? "selected" : ""}`}
+        aria-current={page === "settings" ? "page" : undefined} onClick={() => openSettings("profile")}><Settings size={21} />设置</button></div>
+    </aside>
+    <main>
+      <div className="workspace-topbar" data-tauri-drag-region>
+        <div className="workspace-breadcrumb" data-tauri-drag-region><House size={17} />
+          <button onClick={() => navigate(selectedNav)}>{title}</button>
+          {subTitle && <><ChevronRight size={15} /><strong>{subTitle}</strong></>}
         </div>
-        <nav aria-label="主导航">
-          {navigation.map(([key, label, Icon]) => (
-            <button
-              key={key}
-              className={page === key ? "nav-item selected" : "nav-item"}
-              onClick={() => setPage(key)}
-            >
-              <Icon size={21} />
-              {label}
-              {key === "inbox" && attention.length > 0 && (
-                <b>{attention.length}</b>
-              )}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <button
-            className={`nav-item ${page === "settings" ? "selected" : ""}`}
-            onClick={() => setPage("settings")}
-          >
-            <Settings size={21} />
-            设置与帮助
-          </button>
-          <div className="account">
-            <div className="avatar">
-              <UserRound size={21} />
-            </div>
-            <div>
-              我的账户<small>{statusText[connection.state]}</small>
-            </div>
-            <span
-              className={`dot ${connection.state === "ready" ? "online" : ""}`}
-            />
-          </div>
+        <div className="workspace-top-actions">
+          <button onClick={() => openSettings("connections")}><i className={`connection-dot ${browser.connected ? "connected" : ""}`} />Chrome {browser.connected ? "已连接" : "未连接"}</button>
+          <button onClick={() => openSettings("connections")}><i className={`connection-dot ${connection.state === "ready" ? "connected" : ""}`} />Codex {connection.state === "ready" ? "已连接" : connection.state === "connecting" ? "连接中" : "未连接"}</button>
+          {desktop && <div className="workspace-window-controls">
+            <button aria-label="最小化" onClick={() => windowControl("minimize")}><Minus size={17} /></button>
+            <button aria-label="最大化或还原" onClick={() => windowControl("toggleMaximize")}><Square size={13} /></button>
+            <button aria-label="关闭应用" onClick={() => windowControl("close")}><X size={17} /></button>
+          </div>}
         </div>
-      </aside>
-      <main>
-        <div className="topline">
-          <span>我的求职空间</span>
-          <div>
-            <span className="pill">
-              测试版 {packageInfo.version} · 开发验证中
-            </span>
-            <span
-              className={`dot ${connection.state === "ready" ? "online" : ""}`}
-            />
-            <button className="text-button" onClick={() => setPage("settings")}>
-              Codex {statusText[connection.state]}
-            </button>
-          </div>
-        </div>
-        <header>
-          <div>
-            <h1>{page === "home" ? "今天，开始新的机会" : title}</h1>
-            <p>
-              {page === "home"
-                ? "准备好资料，选择一种方式开始投递。"
-                : page === "running"
-                  ? "每一步看得见，需要时随时暂停接管。"
-                  : page === "history"
-                    ? "查看每一次申请，以及对应的填写内容和证据。"
-                    : "让求职的下一步更清楚。"}
-            </p>
-          </div>
-          {page === "home" ? (
-            <Button variant="secondary" onClick={() => setPage("history")}>
-              <Clock3 size={17} />
-              查看投递记录
-              <ArrowRight size={16} />
-            </Button>
-          ) : (
-            <Button variant="ghost" onClick={() => void refresh()}>
-              <RefreshCw size={16} />
-              刷新
-            </Button>
-          )}
-        </header>
-        {!isTauri() && (
-          <div className="banner">
-            浏览器界面预览，执行器未连接。请从桌面应用启动任务。
-          </div>
-        )}
-        {error && (
-          <div className="banner error" role="alert">
-            {error}
-            <button aria-label="关闭错误" onClick={() => setError("")}>
-              <X size={16} />
-            </button>
-          </div>
-        )}
-        {notice && (
-          <div className="banner" role="status">
-            {notice}
-          </div>
-        )}
-        {page === "home" && (
-          <>
-            <section className="readiness card">
-              {[
-                ["简历与个人资料", "导入并核对后即可重复使用", FileText],
-                ["任务范围", "开始前确认本轮公司与条件", ShieldCheck],
-                ["执行器连接", connection.message, Monitor],
-              ].map(([label, desc, Icon]) => {
-                const I = Icon as typeof FileText;
-                return (
-                  <div key={String(label)}>
-                    <div className="readiness-icon">
-                      <I size={24} />
-                    </div>
-                    <div>
-                      <strong>{String(label)}</strong>
-                      <p>{String(desc)}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </section>
-            <div className="entry-grid">
-              {[
-                {
-                  label: "公司官网网申",
-                  description: "按公司清单填写申请，逐页留档",
-                  button: "导入公司表",
-                  icon: FileText,
-                  page: "companies",
-                },
-                {
-                  label: "BOSS 快速沟通",
-                  description: "使用平台筛选结果，按顺序沟通",
-                  button: "设置筛选条件",
-                  icon: Users,
-                  page: "boss",
-                },
-                {
-                  label: "BOSS AI 精筛",
-                  description: "阅读职位要求，优先投递匹配岗位",
-                  button: "设置求职偏好",
-                  icon: Target,
-                  page: "boss",
-                },
-              ].map((item) => (
-                <section key={item.label} className="entry card">
-                  <div className="entry-title">
-                    <div className="round-icon">
-                      <item.icon size={29} />
-                    </div>
-                    <h2>{item.label}</h2>
-                  </div>
-                  <p>{item.description}</p>
-                  <Button onClick={() => setPage(item.page as Page)}>
-                    {item.button}
-                    <ArrowRight size={17} />
-                  </Button>
-                </section>
-              ))}
-            </div>
-            <div className="columns">
-              <section className="card">
-                <div className="section-title">
-                  <h2>继续未完成的任务</h2>
-                  <button
-                    className="text-button"
-                    onClick={() => setPage("running")}
-                  >
-                    查看全部 →
-                  </button>
-                </div>
-                {snapshot.runs.length === 0 ? (
-                  <div className="empty">
-                    <FolderOpen />
-                    <strong>还没有投递任务</strong>
-                    <p>可以先运行一次本地模拟，熟悉完整流程。</p>
-                    <Button
-                      disabled={busy || !isTauri()}
-                      onClick={() => void demo()}
-                    >
-                      <Play size={16} />
-                      运行本地演示
-                    </Button>
-                  </div>
-                ) : (
-                  snapshot.runs.slice(0, 3).map((r) => (
-                    <button
-                      className="task-row"
-                      key={r.id}
-                      onClick={() => {
-                        setRunId(r.id);
-                        setPage("running");
-                      }}
-                    >
-                      <div className="round-icon small">
-                        <BriefcaseBusiness size={22} />
-                      </div>
-                      <div>
-                        <strong>
-                          {r.config.simulation
-                            ? "本地模拟任务"
-                            : r.config.target_roles.join("、")}
-                        </strong>
-                        <p>{new Date(r.created).toLocaleString("zh-CN")}</p>
-                      </div>
-                      <span className={`badge ${r.status}`}>
-                        {statusText[r.status] || r.status}
-                      </span>
-                      <ArrowRight size={17} />
-                    </button>
-                  ))
-                )}
-              </section>
-              <section className="card">
-                <div className="section-title">
-                  <h2>
-                    需要你处理 <em>· {attention.length}</em>
-                  </h2>
-                  <button
-                    className="text-button"
-                    onClick={() => setPage("inbox")}
-                  >
-                    查看全部 →
-                  </button>
-                </div>
-                {attention.length ? (
-                  attention.slice(0, 3).map((a) => (
-                    <div className="attention-row" key={a.id}>
-                      <Bell size={22} />
-                      <div>
-                        <strong>{a.subject}</strong>
-                        <p>{a.reason}</p>
-                      </div>
-                      <Button onClick={() => setPage("inbox")}>去处理</Button>
-                    </div>
-                  ))
-                ) : (
-                  <div className="empty">
-                    <Check />
-                    <strong>暂无待处理事项</strong>
-                    <p>面试邀约和需要你判断的问题会出现在这里。</p>
-                  </div>
-                )}
-              </section>
-            </div>
-            <div className="footer-stats">
-              <span>
-                <Send size={16} />
-                已投递{" "}
-                {snapshot.attempts.filter((a) => a.status === "success").length}
-              </span>
-              <span>
-                <Clock3 size={16} />
-                待核查{" "}
-                {
-                  snapshot.attempts.filter((a) => a.status === "uncertain")
-                    .length
-                }
-              </span>
-              <span>
-                <Bell size={16} />
-                待处理 {attention.length}
-              </span>
-            </div>
-          </>
-        )}
-        {page === "running" && (
-          <>
-            {sessionError && (
-              <div className="banner error" role="alert">
-                {sessionError}
-              </div>
-            )}
-            <section className="card toolbar">
-              <select
-                aria-label="当前任务"
-                value={runId}
-                onChange={(e) => setRunId(e.target.value)}
-              >
-                <option value="">选择任务</option>
-                {snapshot.runs.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.config.simulation
-                      ? "本地模拟"
-                      : r.config.target_roles.join("、")}{" "}
-                    · {new Date(r.created).toLocaleTimeString("zh-CN")}
-                  </option>
-                ))}
-              </select>
-              <span className={`badge ${run?.status}`}>
-                {run ? statusText[run.status] : "暂无任务"}
-              </span>
-              <div className="spacer" />
-              <Button
-                variant="secondary"
-                disabled={busy || !run || run.status === "stopped"}
-                onClick={() => void control("paused")}
-              >
-                <Pause size={16} />
-                暂停接管
-              </Button>
-              <Button
-                disabled={
-                  busy ||
-                  !run ||
-                  run.status === "stopped" ||
-                  (!scriptMode && connection.state !== "ready")
-                }
-                onClick={() => void control("running")}
-              >
-                <Play size={16} />
-                {run?.status === "paused" ? "开始 / 恢复" : "继续执行"}
-              </Button>
-              <Button
-                variant="danger"
-                disabled={busy || !run || run.status === "stopped"}
-                onClick={() => void control("stopped")}
-              >
-                <Square size={14} />
-                停止
-              </Button>
-            </section>
-            <div className="work-grid">
-              <section className="card queue">
-                <div className="section-title">
-                  <h2>申请队列</h2>
-                  <span>{attempts.length}</span>
-                </div>
-                {attempts.length ? (
-                  attempts.map((a) => (
-                    <div className="queue-row" key={a.id}>
-                      <strong>{a.company}</strong>
-                      <p>{a.job}</p>
-                      <span className={`badge ${a.status}`}>
-                        {statusText[a.status] || a.status}
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="empty">
-                    <FileText />
-                    <p>执行后显示申请记录</p>
-                  </div>
-                )}
-                <Button
-                  variant="secondary"
-                  disabled={busy || !run}
-                  onClick={() =>
-                    void perform(async () => {
-                      if (run?.config.simulation)
-                        await request("open_simulation", { run_id: runId });
-                      else setPage("settings");
-                    })
-                  }
-                >
-                  <FolderOpen size={16} />
-                  {run?.config.simulation ? "打开模拟浏览器" : "浏览器连接设置"}
-                </Button>
-              </section>
-              <section className="card screen">
-                <div className="section-title">
-                  <h2>最近观察画面</h2>
-                  <span>
-                    {snapshot.frame
-                      ? new Date(
-                          snapshot.frame.captured_at * 1000,
-                        ).toLocaleTimeString("zh-CN")
-                      : "等待截图"}
-                  </span>
-                </div>
-                {frame ? (
-                  <button
-                    className="image-button"
-                    onClick={() => setImage(frame)}
-                  >
-                    <img src={frame} alt="执行器最近观察的浏览器画面" />
-                  </button>
-                ) : (
-                  <div className="empty screen-empty">
-                    <Monitor size={40} />
-                    <strong>浏览器准备好后开始任务</strong>
-                    <p>
-                      BOSS
-                      扩展可操作后台标签页；官网和桌面模式请保持目标浏览器在前台。
-                    </p>
-                  </div>
-                )}
-                <div className="screen-caption">
-                  最近截图供观察核对，不是实时视频。
-                </div>
-              </section>
-            </div>
-            <section className="card">
-              <div className="section-title">
-                <h2>执行进度</h2>
-                <span>模型说明与业务记录分别核验</span>
-              </div>
-              <div className="stream" role="log">
-                {messages
-                  .filter((m) => m.runId === runId)
-                  .map((m) => m.text)
-                  .join("") || "任务开始后，执行说明会显示在这里。"}
-              </div>
-            </section>
-          </>
-        )}
-        {page === "history" && (
-          <section className="card">
-            <div className="section-title">
-              <div className="search">
-                <Search size={17} />
-                <input
-                  aria-label="搜索记录"
-                  placeholder="搜索公司或岗位"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-              </div>
-              <Button
-                variant="secondary"
-                disabled={busy || !isTauri()}
-                onClick={() => void exportRecords()}
-              >
-                导出 Excel
-              </Button>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>公司与岗位</th>
-                  <th>渠道</th>
-                  <th>结果</th>
-                  <th>更新时间</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.map((a) => (
-                  <tr key={a.id}>
-                    <td>
-                      <strong>{a.company}</strong>
-                      <p>{a.job}</p>
-                    </td>
-                    <td>{a.channel === "web" ? "官网" : "BOSS"}</td>
-                    <td>
-                      <span className={`badge ${a.status}`}>
-                        {statusText[a.status] || a.status}
-                      </span>
-                    </td>
-                    <td>{new Date(a.updated).toLocaleString("zh-CN")}</td>
-                    <td>
-                      <button
-                        className="text-button"
-                        onClick={() => setDetail(a.id)}
-                      >
-                        查看证据 →
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!records.length && (
-              <div className="empty">
-                <Clock3 />
-                <strong>暂无投递记录</strong>
-                <p>成功、失败和待核查的申请都会保留在这里。</p>
-              </div>
-            )}
-          </section>
-        )}
-        {page === "inbox" && (
-          <Inbox snapshot={snapshot} onChanged={refresh} />
-        )}
-        {page === "settings" && (
-          <section className="card settings">
-            <div className="section-title">
-              <h2>AI 执行器</h2>
-              <span className="badge">{statusText[connection.state]}</span>
-            </div>
-            <p>{connection.message}</p>
-            <div className="actions">
-              <Button
-                disabled={busy || connection.state === "connecting"}
-                onClick={() => void connect()}
-              >
-                {busy ? (
-                  <LoaderCircle className="spin" size={16} />
-                ) : (
-                  <RefreshCw size={16} />
-                )}
-                连接 Codex
-              </Button>
-              {connection.state === "login_required" && (
-                <Button
-                  variant="secondary"
-                  disabled={busy}
-                  onClick={() =>
-                    void perform(async () => {
-                      setConnection(await native<Connection>("codex_login"));
-                    })
-                  }
-                >
-                  登录 ChatGPT
-                </Button>
-              )}
-              <Button
-                variant="secondary"
-                disabled={busy || !isTauri()}
-                onClick={() => void demo()}
-              >
-                新建本地演示
-              </Button>
-            </div>
-            <hr />
-            <h2>浏览器后台连接</h2>
-            <p>
-              加载安装目录中的 browser-extension
-              文件夹后，将下方连接码粘贴到扩展。脚本投递不调用
-              AI，标签页可在后台运行。
-            </p>
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() =>
-                void perform(async () => {
-                  const result = await native<{ code: string }>(
-                    "browser_connect",
-                  );
-                  setBrowserCode(result.code);
-                })
-              }
-            >
-              启动浏览器连接器
-            </Button>
-            {browserCode && (
-              <label className="source-block">
-                连接码（仅保存在本机）
-                <input
-                  aria-label="浏览器连接码"
-                  readOnly
-                  value={browserCode}
-                  onFocus={(e) => e.target.select()}
-                  style={{ width: "100%", padding: 12, marginTop: 10 }}
-                />
-              </label>
-            )}
-            <p>
-              首次加载扩展需在 Chrome
-              的扩展管理中确认。应用退出或电脑休眠后不会继续投递。
-            </p>
-            <hr />
-            <h2>关于当前版本</h2>
-            <p>
-              当前开发版支持资料导入、实习/校招/正式工作配置、BOSS 脚本与 AI
-              模式以及官网公司表。真实页面兼容性以实测记录为准，网申实测待后续进行。
-            </p>
-            <p>
-              截图和台账保存在本地；AI 分析会将所需资料和截图发送到模型服务。
-            </p>
-            <p>退出应用将暂停任务，下次启动需手动恢复。</p>
-          </section>
-        )}
-        {page === "profile" && <Profile onSaved={() => void refresh()} />}
-        {(page === "boss" || page === "companies") && (
-          <TaskSetup
-            key={page}
-            channel={page === "boss" ? "boss" : "web"}
-            onCreated={(id) => {
-              setRunId(id);
-              setPage("running");
-              void refresh();
-            }}
-          />
-        )}
-        {page === "replies" && <Replies />}
-      </main>
+      </div>
+      <div className="workspace-content">
+        {!desktop && <div className="banner">浏览器界面预览，执行器未连接。请从桌面应用启动任务。</div>}
+        {error && <div className="banner error" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError("")}><X size={16} /></button></div>}
+        {notice && <div className="banner" role="status">{notice}</div>}
+        {page === "home" && <Overview snapshot={snapshot} profileReady={profileReady} classify={attentionCategory}
+          onNew={openTask} onRun={openRun} onTodo={(category) => { setTodoCategory(category); navigate("inbox"); }}
+          onRecords={() => navigate("history")} onProfile={() => openSettings("profile")} />}
+        {page === "tasks" && <TasksPage snapshot={snapshot} onNew={openTask} onOpen={openRun} />}
+        {(page === "boss" || page === "companies") && <TaskSetup key={`${page}:${editingRun?.id ?? "new"}`} channel={page === "boss" ? "boss" : "web"}
+          initialRun={editingRun} latestRun={snapshot.runs.find((item) => !item.config.simulation && item.config.channels.includes(page === "boss" ? "boss" : "web"))}
+          onSwitchChannel={openTask} onBack={() => editingRun ? openRun(editingRun.id) : navigate("tasks")}
+          browserReady={browserReady} codexReady={connection.state === "ready"}
+          onCreated={(id) => { setRunProblem(undefined); openRun(id); void refresh(); }} />}
+        {page === "running" && <Workbench key={runId} run={run} snapshot={snapshot} messages={messages} busy={busy}
+          starting={Boolean(run && startingRun === run.id && !isActiveRun(run))}
+          browserReady={browserReady} codexReady={connection.state === "ready"}
+          previewKey={run && !run.config.simulation && run.config.channels.includes("boss") && run.status !== "stopped" && browserReady
+            ? `${runId}:${browser.pinned_target}` : ""}
+          frame={savedFrame && savedFrame.id === frameId ? savedFrame.url : ""}
+          problem={runProblem?.id === runId ? runProblem.text : undefined}
+          onBack={() => navigate("tasks")} onControl={(action) => void control(action)}
+          onEdit={run && !run.config.simulation ? editTask : undefined}
+          onWatch={run && !run.config.simulation && ["paused", "completed"].includes(run.status) ? () => void control("watching") : undefined}
+          onBrowserSetup={() => run?.config.simulation ? void perform(async () => { await request("open_simulation", { run_id: runId }); }) : openSettings("connections")}
+          onImage={(kind, identity) => void perform(async () => { setImage((await request<{ url: string }>("read_image", { kind, identity })).url); })} />}
+        {page === "history" && <Records snapshot={snapshot} onExport={exportRecords} exporting={busy} />}
+        {page === "inbox" && <Inbox key={todoCategory ?? "all"} snapshot={snapshot} onChanged={refresh} initialCategory={todoCategory} />}
+        {page === "settings" && <><header className="workspace-title"><h1>设置</h1></header><SettingsPage active={settingsTab} onTabChange={setSettingsTab} onSaved={async () => { loadProfile(); await refresh(); }}
+          diagnostics={<ConnectionDiagnostics browser={browser} connection={connection} busy={busy} browserInUse={browserInUse} desktop={desktop}
+            diagnostic={diagnostic}
+            onConnectChrome={() => void perform(async () => { setDiagnostic(undefined); setBrowser(await native<BrowserState>("browser_connect")); })}
+            onSelectTab={(targetId) => void perform(async () => { setDiagnostic(undefined); setBrowser(await native<BrowserState>("browser_select_tab", { targetId })); })}
+            onInspect={() => void perform(async () => setDiagnostic(await native<BrowserDiagnostic>("browser_inspect")))}
+            onConnectCodex={() => void perform(async () => setConnection(await native<Connection>("codex_connect")))}
+            onLogin={() => void perform(async () => setConnection(await native<Connection>("codex_login")))}
+            onDemo={() => void demo()} />} /></>}
+      </div>
+    </main>
       {preview && (
         <div className="modal-backdrop">
           <section
@@ -817,7 +252,7 @@ export default function App() {
               <li>填写姓名、邮箱与项目经历，截图留档</li>
               <li>提交模拟申请，核验页面回执</li>
               <li>触发一次模拟 BOSS 沟通，上限 1 次</li>
-              <li>识别面试邀约并转入消息中心</li>
+              <li>识别面试邀约并生成待办</li>
             </ul>
             <div className="banner">
               会控制鼠标和键盘。登录招聘网站、真实投递和发送真实消息均不在本轮范围内。
@@ -833,74 +268,10 @@ export default function App() {
           </section>
         </div>
       )}
-      {selected && (
-        <div className="modal-backdrop">
-          <section
-            className="modal wide"
-            role="dialog"
-            aria-modal="true"
-            aria-label="申请证据"
-          >
-            <div className="section-title">
-              <h2>{selected.company} · 填写与证据</h2>
-              <button aria-label="关闭详情" onClick={() => setDetail("")}>
-                <X />
-              </button>
-            </div>
-            <p>{selected.reason || statusText[selected.status]}</p>
-            {snapshot.fields
-              .filter((f) => f.attempt_id === selected.id)
-              .map((f) => (
-                <div className="field-row" key={f.name}>
-                  <strong>{f.name}</strong>
-                  <span>{f.value}</span>
-                  <small>来源：{f.source}</small>
-                </div>
-              ))}
-            <div className="actions">
-              {snapshot.evidence
-                .filter((e) => e.attempt_id === selected.id)
-                .map((e) => (
-                  <Button
-                    key={e.id}
-                    variant="secondary"
-                    onClick={() =>
-                      void perform(async () =>
-                        setImage(
-                          (
-                            await request<{ url: string }>("read_image", {
-                              kind: "evidence",
-                              identity: e.id,
-                            })
-                          ).url,
-                        ),
-                      )
-                    }
-                  >
-                    查看截图 · {e.kind}
-                  </Button>
-                ))}
-            </div>
-          </section>
-        </div>
-      )}
-      {image && (
-        <div
-          className="modal-backdrop image-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label="截图预览"
-        >
-          <button
-            className="image-close"
-            aria-label="关闭图片"
-            onClick={() => setImage("")}
-          >
-            <X />
-          </button>
-          <img src={image} alt="申请截图证据" />
-        </div>
-      )}
+      {image && <div className="modal-backdrop image-modal" role="dialog" aria-modal="true" aria-label="截图预览">
+        <button className="image-close" aria-label="关闭图片" onClick={() => setImage("")}><X /></button>
+        <img src={image} alt="申请截图证据" />
+      </div>}
     </div>
   );
 }

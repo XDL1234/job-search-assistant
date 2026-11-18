@@ -83,6 +83,29 @@ class DashboardTests(unittest.TestCase):
         self.panel.attention(self.db, {'id': item['id'], 'action': 'resume', 'message_key': 'm2', 'confirmed': True})
         self.assertEqual(self.db.one('conversations', 'hr-1')['status'], 'auto')
 
+    def test_job_review_opens_only_saved_matching_boss_url_and_saves_note_with_resolve(self):
+        key = '/job_detail/fixture.html'
+        url = 'https://www.zhipin.com' + key + '?securityId=fixture'
+        review = {'company': '某公司', 'job': '某岗位', 'city': '深圳', 'reason': '核对经验', 'url': url}
+        item = self.db.attention(key, '岗位精筛待人工查看', job_review=review)
+        other = self.db.attention(key, '其他原因', job_review={**review, 'url': 'https://example.test' + key})
+        self.assertEqual(self.panel.snapshot(self.db)['attention'][0]['job_review'], review)
+        with patch('job_assistant.dashboard.webbrowser.open_new_tab', return_value=True) as opened:
+            self.assertTrue(self.panel.attention(self.db, {'id': item['id'], 'action': 'open_job'})['opened'])
+            opened.assert_called_once_with(url)
+            with self.assertRaisesRegex(ValueError, '授权'):
+                self.panel.attention(self.db, {'id': other['id'], 'action': 'open_job'})
+            opened.assert_called_once()
+
+        finish = {'id': item['id'], 'action': 'resolve', 'text': '先保留该岗位资料'}
+        with self.assertRaisesRegex(ValueError, '明确确认'):
+            self.panel.attention(self.db, finish)
+        self.assertEqual(self.db.conn.execute('SELECT COUNT(*) FROM attention_notes').fetchone()[0], 0)
+        self.panel.attention(self.db, {**finish, 'confirmed': True})
+        self.assertEqual(self.db.conn.execute('SELECT resolved FROM attention WHERE id=?', (item['id'],)).fetchone()[0], 1)
+        self.assertEqual(self.db.conn.execute('SELECT text FROM attention_notes').fetchone()[0], finish['text'])
+        self.assertEqual(self.db.snapshot()['actions'], [])
+
     def test_cli_watching_resume_requires_material_check_and_new_frame(self):
         self.db.control(self.run, 'paused')
         (self.root / 'resume.pdf').write_bytes(b'changed')

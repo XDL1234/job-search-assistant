@@ -55,6 +55,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS attention (
           id TEXT PRIMARY KEY, subject TEXT, reason TEXT, resolved INTEGER DEFAULT 0, created TEXT,
           notified INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS attention_job_review (
+          attention_id TEXT PRIMARY KEY REFERENCES attention(id), facts TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS panel_commands (
           id TEXT PRIMARY KEY, run_id TEXT REFERENCES runs(id), action TEXT,
           status TEXT, error TEXT, created TEXT, updated TEXT);
@@ -96,6 +98,12 @@ class Store:
         return identity
 
     def check_run(self, run_id, kind=None):
+        expected = getattr(self, 'request_generation', None)
+        if expected is not None:
+            if expected[0] != run_id:
+                raise ValueError('操作不属于当前 AI 决策轮次')
+            from .app_decisions import check_generation
+            check_generation(self, run_id, expected[1])
         run = self.one('runs', run_id)
         if run['status'] not in ('running', 'watching'):
             raise ValueError('运行已暂停或停止')
@@ -110,6 +118,8 @@ class Store:
             cursor = self.conn.execute("UPDATE runs SET status=? WHERE id=? AND status!='stopped'", (status, run_id))
             if cursor.rowcount != 1:
                 raise ValueError('运行不存在或已停止；请新建授权轮次')
+            from .app_decisions import advance_control
+            advance_control(self, run_id)
             if status in ('running', 'watching'):
                 self.conn.execute('''INSERT INTO executor_activity VALUES (?, '', '', NULL, ?)
                   ON CONFLICT(run_id) DO UPDATE SET fresh_after=excluded.fresh_after''', (run_id, time.time()))
@@ -247,14 +257,15 @@ class Store:
                               (conversation, 'auto', '', message_key, now()))
         return True
 
-    def attention(self, subject, reason):
-        old = self.conn.execute('SELECT id FROM attention WHERE subject=? AND reason=? AND resolved=0', (subject, reason)).fetchone()
-        if old:
-            return {'id': old[0], 'new': False}
-        identity = uuid.uuid4().hex
+    def attention(self, subject, reason, job_review=None):
         with self.conn:
-            self.conn.execute('INSERT INTO attention (id,subject,reason,resolved,created) VALUES (?,?,?,?,?)', (identity, subject, reason, 0, now()))
-        return {'id': identity, 'new': True}
+            old = self.conn.execute('SELECT id FROM attention WHERE subject=? AND reason=? AND resolved=0', (subject, reason)).fetchone()
+            identity = old[0] if old else uuid.uuid4().hex
+            if not old:
+                self.conn.execute('INSERT INTO attention (id,subject,reason,resolved,created) VALUES (?,?,?,?,?)', (identity, subject, reason, 0, now()))
+            if job_review:
+                self.conn.execute('INSERT OR IGNORE INTO attention_job_review VALUES (?,?)', (identity, packed(job_review)))
+        return {'id': identity, 'new': old is None}
 
     def claim_notification(self, attention_id):
         with self.conn:

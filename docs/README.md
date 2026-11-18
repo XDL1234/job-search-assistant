@@ -8,8 +8,9 @@
 | 桌面应用八页界面 | 已确认第一版视觉基准 | [界面与图册](design/app-ui-v1/README.md) |
 | 桌面产品与架构 | 已记录确认选项与实现边界 | [设计说明](design/app-ui-v1/desktop-spec.md) |
 | Codex 接入 | 已完成模拟数据协议探针 | [验证报告](design/app-ui-v1/codex-probe.md) |
-| 桌面应用实现 | beta.4 安装包已发布；三种路径各一次真实开聊通过 | [beta.4 说明](releases/v0.3.0-beta.4.md)、[构建发布](desktop-packaging.md) |
-| 后台开发迭代 | 卡片与回执适配；聊天列表、附件、问答及网申仍待实站验收 | [后台说明](background-browser.md)、[迭代计划](superpowers/plans/2026-11-16-live-job-search.md) |
+| 桌面应用实现 | beta.10 Windows 测试版，包含本轮任务恢复、后台快投与记录修正 | [beta.10 说明](releases/v0.3.0-beta.10.md)、[构建发布](desktop-packaging.md) |
+| 旧浏览器底座迁移 | beta.5 本机迭代记录 | [beta.5 说明](releases/v0.3.0-beta.5.md)、[后台说明](background-browser.md) |
+| JPEG 实时预览与低 token 执行 | 已实现；三种模式各一次真实开聊，完成五轮改造与回归 | [详细方案](design/jpeg-stream-agent-browser.md)、[迭代记录](superpowers/plans/2026-11-18-agent-browser-iterations.md) |
 | 发布历史 | v0.2.0 Skill 与桌面测试版分别记录 | [变更记录](../CHANGELOG.md) |
 
 ## 维护约定
