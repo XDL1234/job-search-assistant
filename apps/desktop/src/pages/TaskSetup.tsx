@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  BriefcaseBusiness, Check, ChevronRight, Clipboard, ExternalLink, FileSpreadsheet, FileText, Info,
+  ArrowLeft, BriefcaseBusiness, Check, ChevronRight, Clipboard, ExternalLink, FileSpreadsheet, FileText, Info,
   Layers, MapPin, MessageCircle, Minus, Plus, RefreshCw, Search,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -164,15 +164,15 @@ export function TaskSetup({
 
   return <section className="task-page task-setup-page">
     <div className="task-page-heading"><h1>{preview ? "确认本轮范围" : initialRun ? "编辑任务" : "新建投递"}</h1>
-      {onBack && <Button variant="ghost" onClick={onBack} disabled={busy}>{initialRun ? "返回工作台" : "返回任务列表"}</Button>}
+      {onBack && <Button variant="ghost" onClick={onBack} disabled={busy}><ArrowLeft size={16} aria-hidden="true"/>{initialRun ? "返回工作台" : "返回任务列表"}</Button>}
     </div>
-    {!initialRun && <div className="task-tabs" aria-label="投递渠道">
-      {([["boss", "BOSS 直聘"], ["web", "公司网申"]] as const).map(([id, label]) =>
+    {!initialRun && <div className="task-tabs task-channel-tabs" role="group" aria-label="投递渠道">
+      {([["boss", "BOSS 直聘", MessageCircle], ["web", "公司网申", FileSpreadsheet]] as const).map(([id, label, Icon]) =>
         <button key={id} type="button" aria-pressed={channel === id} disabled={busy || (channel !== id && !onSwitchChannel)} onClick={() => {
           if (channel === id) return;
           setPreview(null);
           onSwitchChannel?.(id);
-        }}>{label}</button>)}
+        }}><Icon size={16} aria-hidden="true"/>{label}</button>)}
     </div>}
     <Steps labels={isBoss ? ["设置范围", "确认范围", "工作台"] : ["导入公司表", "核对清单", "预览任务"]}
       current={preview ? isBoss ? 1 : 2 : !isBoss && table ? 1 : 0}/>
@@ -211,7 +211,7 @@ export function TaskSetup({
             </div></div>
           </>}
         </div>
-        <aside className="task-confirm-checks">
+        <aside className="task-outline task-confirm-checks">
           <div><Check size={18} className="task-ok"/><strong>资料已就绪</strong></div>
           <p>{fileName(preview.config.resume_path)}</p>
           {isBoss && <div>{browserReady ? <Check size={18} className="task-ok"/> : <Info size={18}/>}
@@ -228,7 +228,7 @@ export function TaskSetup({
       </div>
     </> : isBoss ? <>
       <div className="task-two-columns task-boss-columns">
-        <div>
+        <div className="task-outline task-boss-form">
           <fieldset className="task-fieldset"><legend>搜索范围</legend>
             <label className="task-scope-option"><input type="radio" name="boss-scope" checked={useSaved} onChange={() => setScope("saved")}/> 使用已保存条件</label>
             <div className="task-saved-strip"><span><FileText size={17}/>{preferences ? sourceName : "尚未保存岗位条件"}</span>
@@ -242,7 +242,7 @@ export function TaskSetup({
             </label>)}
           </fieldset>
         </div>
-        <aside className="task-condition-summary">
+        <aside className="task-outline task-condition-summary">
           <h2>条件摘要</h2>
           <ul>
             <li><MapPin size={19}/>{selectedPreferences?.boss_filters.city || "沿用当前城市"}</li>

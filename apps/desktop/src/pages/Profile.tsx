@@ -147,23 +147,26 @@ export function Profile({ onSaved }: { onSaved: () => void | Promise<void> }) {
               </details>
             </article>
           </div>
-          <div className="settings-personal">
-            <div>
+          <article className="settings-personal">
+            <header>
+              <h2>个人信息</h2>
               <span className={`workspace-tag ${saved && !dirty ? "success" : ""}`}>
-                <Save size={15} />{loading ? "正在读取" : dirty ? "更改待保存" : saved ? "已保存资料" : "本机保存"}
+                <Save size={15} aria-hidden="true" />{loading ? "正在读取" : dirty ? "更改待保存" : saved ? "已保存资料" : "本机保存"}
               </span>
+            </header>
+            <div className="settings-personal-fields">
+              <label>姓名<input value={profile.name || ""} autoComplete="name" onChange={(event) => setField("name", event.target.value)} /></label>
+              <label>求职方向<input value={profile.target_role || ""} onChange={(event) => setField("target_role", event.target.value)} /></label>
+              <label>邮箱<input type="email" autoComplete="email" value={profile.contact?.email || ""} onChange={(event) => setContact("email", event.target.value)} /></label>
+              <label>手机号<input type="tel" autoComplete="tel" value={profile.contact?.phone || ""} onChange={(event) => setContact("phone", event.target.value)} /></label>
             </div>
-            <label>姓名<input value={profile.name || ""} autoComplete="name" onChange={(event) => setField("name", event.target.value)} /></label>
-            <label>求职方向<input value={profile.target_role || ""} onChange={(event) => setField("target_role", event.target.value)} /></label>
-            <label>邮箱<input type="email" autoComplete="email" value={profile.contact?.email || ""} onChange={(event) => setContact("email", event.target.value)} /></label>
-            <label>手机号<input type="tel" autoComplete="tel" value={profile.contact?.phone || ""} onChange={(event) => setContact("phone", event.target.value)} /></label>
-          </div>
+          </article>
         </div>
         <div className="settings-profile-footer">
+          <span className="muted">保存资料会创建本机资料版本</span>
           <Button disabled={busy || !source || !resume || !profile.name?.trim()} onClick={save}>
             {busy ? "处理中…" : "保存资料"}
           </Button>
-          <span className="muted">保存资料会创建本机资料版本</span>
         </div>
       </fieldset>
     </section>

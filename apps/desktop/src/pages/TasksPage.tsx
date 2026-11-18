@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BarChart3, Check, ChevronDown, ChevronRight, LoaderCircle, Pause, Play, Plus, Search, Square, X } from "lucide-react";
+import { ArrowUpRight, BarChart3, Check, ChevronDown, ChevronRight, FileText, Inbox, LoaderCircle, MessageCircle, Pause, Play, Plus, Search, Square, X } from "lucide-react";
 import { native } from "../bridge";
 import { Button } from "../components/ui/button";
 import type { Run, Snapshot } from "../contracts";
@@ -35,11 +35,11 @@ function timeLabel(value?: string | null) {
 }
 
 function statusAppearance(run: Run) {
-  if (classification(run) === "pending") return { tone: "amber", icon: Play };
+  if (classification(run) === "pending") return { tone: "muted", icon: Play };
   switch (run.status) {
     case "running": case "starting": case "watching": return { tone: "violet", icon: LoaderCircle };
-    case "paused": return { tone: "muted", icon: Pause };
-    case "stopped": return { tone: "red", icon: Square };
+    case "paused": return { tone: "amber", icon: Pause };
+    case "stopped": return { tone: "muted", icon: Square };
     case "completed": case "success": return { tone: "green", icon: Check };
     default: return { tone: "muted", icon: null };
   }
@@ -163,22 +163,24 @@ export function TasksPage({ snapshot, onNew, onOpen }: {
 
   return <section className="task-page task-list-page">
     <div className="task-page-heading">
-      <div className="task-heading-together"><h1>投递任务</h1>
+      <h1>投递任务</h1>
+      <div className="task-page-actions">
         <Button variant="secondary" onClick={(event) => toggleUsage(null, event.currentTarget)} aria-expanded={popover?.runId === null}>
           <BarChart3 size={17}/> AI 用量总览 <ChevronDown size={16}/>
         </Button>
+        <Button onClick={() => onNew("boss")}><Plus size={18}/> 新建投递</Button>
       </div>
-      <Button onClick={() => onNew("boss")}><Plus size={18}/> 新建投递</Button>
     </div>
-    <div className="task-tabs" aria-label="任务状态">
-      {tabs.map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}>{label} <span>{counts[value]}</span></button>)}
-    </div>
-    <div className="task-filter-row">
-      <label className="task-search"><Search size={17}/><input aria-label="搜索任务" placeholder="搜索任务、岗位或城市" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
-      <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
-        <option value="all">全部渠道</option><option value="boss">BOSS 直聘</option><option value="web">公司网申</option><option value="simulation">本地演示</option>
-      </select>
-    </div>
+    <div className="task-list-panel task-outline">
+      <div className="task-filter-row task-list-toolbar">
+        <label className="task-search"><Search size={17} aria-hidden="true"/><input aria-label="搜索任务" placeholder="搜索任务、岗位或城市" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+        <div className="task-tabs" role="group" aria-label="任务状态">
+          {tabs.map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}>{label} <span>{counts[value]}</span></button>)}
+        </div>
+        <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
+          <option value="all">全部渠道</option><option value="boss">BOSS 直聘</option><option value="web">公司网申</option><option value="simulation">本地演示</option>
+        </select>
+      </div>
     <div className="task-table-wrap">
       <table className="task-table">
         <thead><tr><th>任务名称</th><th>渠道</th><th>状态</th><th>本轮结果</th><th>AI 用量（Token）</th><th>更新时间</th><th aria-label="操作"/></tr></thead>
@@ -192,19 +194,21 @@ export function TasksPage({ snapshot, onNew, onOpen }: {
               ? total.turns && !total.tokens.total ? "待回传" : total.tokens.total.toLocaleString("zh-CN")
               : run.config.execution_mode === "script" ? "0"
                 : classification(run) === "pending" ? "未启动" : "未记录";
+            const ChannelIcon = boss && !run.config.simulation ? MessageCircle : FileText;
             return <tr key={run.id} data-active={classification(run) === "active"}>
               <td><button className="task-name" onClick={() => onOpen(run.id)}>{runName(run)}</button></td>
-              <td><span className="task-channel">{run.config.simulation ? "演示" : boss ? "BOSS" : "网申"}</span></td>
+              <td><span className="task-channel"><ChannelIcon size={15} aria-hidden="true"/>{run.config.simulation ? "本地演示" : boss ? "BOSS 直聘" : "公司网申"}</span></td>
               <td><span className={"task-status " + status.tone}>{status.icon && <status.icon size={14}/>} {runStatus(run)}</span></td>
               <td>{result ? <><span>{count}{limit ? " / " + limit : ""} {result}</span>{limit && <progress className="task-progress" aria-label="本轮沟通进度" value={Math.min(count, limit)} max={limit}/>}</> : "—"}</td>
               <td><button className="task-usage-link" aria-label={runName(run) + " AI 用量"} aria-expanded={popover?.runId === run.id} onClick={(event) => toggleUsage(run.id, event.currentTarget)}>{aiText} <ChevronRight size={14}/></button></td>
               <td><time dateTime={run.updated_at || run.created}>{timeLabel(run.updated_at || run.created)}</time></td>
-              <td><Button variant="secondary" onClick={() => onOpen(run.id)}>打开工作台</Button></td>
+              <td><Button variant="secondary" onClick={() => onOpen(run.id)}>打开工作台 <ArrowUpRight size={14} aria-hidden="true"/></Button></td>
             </tr>;
           })}
-          {!runs.length && <tr><td colSpan={7} className="task-table-empty">{snapshot.runs.length ? "没有符合条件的任务" : "还没有投递任务"}</td></tr>}
+          {!runs.length && <tr><td colSpan={7} className="task-table-empty"><Inbox size={22} aria-hidden="true"/>{snapshot.runs.length ? "没有符合条件的任务" : "还没有投递任务"}</td></tr>}
         </tbody>
       </table>
+    </div>
     </div>
     {popover && <><button className="task-pop-backdrop" aria-label="关闭用量弹层" onClick={() => setPopover(undefined)}/>
       <section className="task-popover" aria-label={selected ? "本任务 AI 用量" : "AI 用量总览"} style={{ top: popover.top, left: popover.left }}>

@@ -2,7 +2,7 @@
 
 Windows 求职辅助项目，提供桌面应用测试版及 Codex Skill / 插件源码包。简历与个人资料由用户提供；按轮次授权后操作，面试邀约始终转人工。
 
-**下载桌面测试版** [v0.3.0-beta.10 Windows x64 安装包](https://github.com/XDL1234/job-search-assistant/releases/tag/v0.3.0-beta.10)。在 Assets 中下载安装程序，可选择安装目录并使用桌面快捷方式。普通用户无需安装 Python、Node 或 Rust。详见[功能范围与安装说明](docs/releases/v0.3.0-beta.10.md)。
+**下载桌面测试版** [v0.3.0-beta.12 Windows x64 安装包](https://github.com/XDL1234/job-search-assistant/releases/tag/v0.3.0-beta.12)。在 Assets 中下载安装程序，可选择安装目录并使用桌面快捷方式。普通用户无需安装 Python、Node 或 Rust。详见[界面变化与安装说明](docs/releases/v0.3.0-beta.12.md)。
 
 ## 项目状态与文档
 

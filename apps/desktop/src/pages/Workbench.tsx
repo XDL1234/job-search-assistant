@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, Circle, ExternalLink, Info, LoaderCircle, MessageSquare, Monitor, Pause, Pencil, Play, Square, X } from "lucide-react";
+import { ArrowLeft, Circle, ExternalLink, Info, LoaderCircle, MessageSquare, Monitor, Pause, Pencil, Play, Square, X } from "lucide-react";
 import { Button } from "../components/ui/button";
 import type { Run, Snapshot } from "../contracts";
 import { Preview } from "../Preview";
@@ -48,6 +48,7 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
 
   const boss = run.config.channels.includes("boss");
   const script = run.config.execution_mode === "script";
+  const stoppedBoss = boss && run.status === "stopped" && !run.config.simulation;
   const completed = run.status === "stopped" || run.status === "completed";
   const scope = new Set(snapshot.run_attempts?.filter((row) => row.run_id === run.id).map((row) => row.attempt_id));
   const attempts = snapshot.attempts.filter((row) => row.run_id === run.id || scope.has(row.id));
@@ -62,16 +63,18 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
   const savedFrame = snapshot.frame?.run_id === run.id ? snapshot.frame : undefined;
   return <section className="workbench-page">
     <header className="workspace-title workbench-title">
-      <div><button className="text-button" onClick={onBack}><ArrowLeft size={16} /> 投递任务</button>
-        <div className="workbench-name"><h1>{runName(run)}</h1><span className={`badge ${run.status}`}>{starting ? "正在启动" : runStatus(run)}</span>
+      <div><button className="text-button workbench-back" onClick={onBack}><ArrowLeft size={16} /> 投递任务</button>
+        <h1>{runName(run)}</h1>
+        <div className="workbench-meta"><span>{boss ? "BOSS 直聘" : "公司网申"}</span>
+          <span className={`badge ${run.status}`}>{starting ? "正在启动" : runStatus(run)}</span>
           <span>{boss ? `已沟通 ${result}${run.config.max_contacts ? ` / ${run.config.max_contacts}` : ""}` : `已提交 ${result}`}</span></div></div>
       <div className="workbench-actions">
+        {active ? <Button disabled={busy} onClick={() => onControl("paused")}><Pause size={17} /> 暂停接管</Button>
+          : <Button disabled={busy || completed || (!script && !codexReady)} onClick={() => onControl("running")}><Play size={17} /> 开始 / 恢复</Button>}
         {onEdit && !active && (completed || run.status === "paused") &&
           <Button variant="secondary" disabled={busy} onClick={onEdit}><Pencil size={16} /> 编辑任务</Button>}
         {onWatch && boss && script && !active && (run.status === "paused" || run.status === "completed") &&
           <Button variant="secondary" disabled={busy} onClick={onWatch}><MessageSquare size={16} /> 消息值守</Button>}
-        {active ? <Button disabled={busy} onClick={() => onControl("paused")}><Pause size={17} /> 暂停接管</Button>
-          : <Button disabled={busy || completed || (!script && !codexReady)} onClick={() => onControl("running")}><Play size={17} /> 开始 / 恢复</Button>}
         <Button variant="secondary" className="workbench-end" disabled={busy || completed} onClick={() => setEnding(true)}><Square size={15} /> 结束任务</Button>
       </div>
     </header>
@@ -88,8 +91,8 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
               <div><strong>{starting ? "正在启动" : run.status === "watching" ? "正在值守消息" : active ? "任务运行中" : runStatus(run)}</strong>
                 {active && !starting && elapsedLabel && <small>已运行 {elapsedLabel}</small>}</div>
             </div>
-            <div className="workbench-timeline" role="log">
-              {eventRows.length ? eventRows.map((item) => <div key={item.key}><Check size={17} /><time dateTime={item.at}>{timeText(item.at)}</time><p>{item.text}</p></div>)
+            <div className="workbench-timeline" role="log" aria-label="执行记录">
+              {eventRows.length ? eventRows.map((item) => <div key={item.key}><Circle size={12} aria-hidden="true" /><time dateTime={item.at}>{timeText(item.at)}</time><p>{item.text}</p></div>)
                 : attempts.length ? attempts.slice().sort((a, b) => a.updated.localeCompare(b.updated)).map((row) =>
                   <div key={row.id}><Circle size={15} /><time dateTime={row.updated}>{timeText(row.updated)}</time><p><strong>{row.company} · {row.job}</strong>{row.reason && <small>{row.reason}</small>}</p></div>)
                   : <p className="muted">任务开始后，执行记录会显示在这里。</p>}
@@ -118,22 +121,25 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
           (event.shiftKey ? last : first)?.focus();
         }}>
         <div className="workbench-screen-title"><h2>浏览器画面</h2>{browserReady && boss && !run.config.simulation && <span className="badge success">已绑定 Chrome</span>}
-          {expanded && <button autoFocus aria-label="关闭放大预览" onClick={closePreview}><X size={20} /></button>}</div>
+          {expanded && <button autoFocus aria-label="关闭放大预览" onClick={closePreview}><X size={20} /></button>}
+          {screen === "live" && previewKey && !expanded && <Button ref={expandButton} variant="secondary" onClick={() => setExpanded(true)}><ExternalLink size={15} /> 放大预览</Button>}
+        </div>
         <div className="workspace-tabs" aria-label="画面类型">
           <button aria-pressed={screen === "live"} onClick={() => setScreen("live")}>实时画面</button>
           <button aria-pressed={screen === "saved"} onClick={() => setScreen("saved")}>留档截图</button>
         </div>
         <div className="workbench-body">
           {screen === "live" ? previewKey ? <Preview key={previewKey} /> : <div className="workbench-placeholder">
-            <Monitor size={32} /><strong>{run.config.simulation ? "本地模拟" : boss ? "等待 Chrome 连接" : "官网网申使用业务截图"}</strong>
-            <Button variant="secondary" disabled={busy} onClick={onBrowserSetup}>{run.config.simulation ? "打开模拟浏览器" : "浏览器连接设置"}</Button>
+            <Monitor size={30} /><strong>{run.config.simulation ? "本地模拟" : stoppedBoss ? "任务已停止" : boss ? "等待 Chrome 连接" : "官网网申使用业务截图"}</strong>
+            {stoppedBoss
+              ? savedFrame && <Button variant="secondary" onClick={() => setScreen("saved")}>查看留档截图</Button>
+              : <Button variant="secondary" disabled={busy} onClick={onBrowserSetup}>{run.config.simulation ? "打开模拟浏览器" : "浏览器连接设置"}</Button>}
           </div> : <div className="workbench-saved">
             {savedFrame && frame ? <button className="image-button" onClick={() => onImage("frame", savedFrame.id)}>
               <img src={frame} alt="当前任务最新截图" />
             </button> : <p className="muted">本轮暂无留档截图。</p>}
           </div>}
-          <div className="workbench-screen-footer"><span>{screen === "live" ? "只读预览" : "当前任务最新截图 · 各岗位留档见投递记录"}</span>
-            {screen === "live" && previewKey && !expanded && <Button ref={expandButton} variant="secondary" onClick={() => setExpanded(true)}><ExternalLink size={16} /> 放大预览</Button>}</div>
+          <div className="workbench-screen-footer">{screen === "live" ? "只读预览" : "当前任务最新截图 · 各岗位留档见投递记录"}</div>
         </div>
       </section>
     </div>

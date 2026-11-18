@@ -204,11 +204,16 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
     { value: filters.query, clear: () => edit(() => setFilters((value) => ({ ...value, query: undefined }))) },
   ];
 
+  const closeDrawer = () => {
+    drawer.current?.close();
+    onClose?.();
+  };
+
   const contents = <>
     <div className="task-drawer-heading"><h2 id="boss-preferences-heading">编辑岗位条件</h2>
-      {onClose && <button type="button" className="task-icon" aria-label="关闭岗位条件编辑" disabled={busy} onClick={onClose}><X size={20}/></button>}
+      {onClose && <button type="button" className="task-icon" aria-label="关闭岗位条件编辑" disabled={busy} onClick={closeDrawer}><X size={20}/></button>}
     </div>
-    <div className="task-tabs" aria-label="岗位条件选项">
+    <div className="task-tabs" role="group" aria-label="岗位条件选项">
       <button type="button" aria-pressed={activeTab === "basic"} onClick={() => setActiveTab("basic")}>基本条件</button>
       <button type="button" aria-pressed={activeTab === "advanced"} onClick={() => setActiveTab("advanced")}>高级筛选</button>
     </div>
@@ -234,7 +239,7 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
         setNotice(localOnly ? "已保存到任务草稿，请在预览中确认修改。" : "已保存岗位条件。");
       });
     }}>
-      <fieldset disabled={!loaded || busy} className="task-preferences-body">
+      <div className="task-preferences-scroll"><fieldset disabled={!loaded || busy} className="task-preferences-body">
         <div className="task-scope-chips"><span>当前范围</span>
           {scope.map(({value, clear}, index) => value && <button key={index} type="button" onClick={clear} aria-label={"移除条件 " + value}>{value}<X size={13}/></button>)}
           {!scope.some((item) => item.value) && <small>沿用 BOSS 当前城市，求职类型不限。</small>}
@@ -290,7 +295,7 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
           </fieldset>
           {kind === "campus" && <p className="muted">校招使用 BOSS 的「全职」和「应届生」筛选。</p>}
         </>}
-      </fieldset>
+      </fieldset></div>
       <div className="task-drawer-footer">
         {!localOnly && <Button type="button" variant="secondary" disabled={!saved || dirty || busy} onClick={() => void perform(async () => {
           setNotice((await native<{ message: string }>("browser_apply_job_preferences")).message);
@@ -302,6 +307,6 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
 
   return onClose ? <dialog ref={drawer} className="task-drawer" aria-labelledby="boss-preferences-heading" onCancel={(event) => {
     event.preventDefault();
-    if (!busy) onClose();
+    if (!busy) closeDrawer();
   }}>{contents}</dialog> : <section className="task-preferences-page">{contents}</section>;
 }

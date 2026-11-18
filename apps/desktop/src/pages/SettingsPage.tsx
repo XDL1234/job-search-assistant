@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ArrowRight, Bot, ChevronDown, CircleCheck, FileText, Monitor, Play } from "lucide-react";
+import { ArrowRight, Bot, Cable, ChevronDown, CircleCheck, ContactRound, FileText, MessagesSquare, Monitor, Play } from "lucide-react";
 import { Button } from "../components/ui/button";
 import type { BrowserState, Connection } from "../contracts";
 import { Profile } from "./Profile";
@@ -7,11 +7,11 @@ import { Replies } from "./Replies";
 import "./WorkspaceSettings.css";
 
 export type SettingsTab = "profile" | "replies" | "connections";
-const tabs: { key: SettingsTab; label: string }[] = [
-  { key: "profile", label: "资料与简历" },
-  { key: "replies", label: "回复规则" },
-  { key: "connections", label: "连接与诊断" },
-];
+const tabs = [
+  { key: "profile", label: "资料与简历", icon: ContactRound },
+  { key: "replies", label: "回复规则", icon: MessagesSquare },
+  { key: "connections", label: "连接与诊断", icon: Cable },
+] as const;
 const connectionLabels: Record<Connection["state"], string> = {
   ready: "已连接",
   disconnected: "未连接",
@@ -31,9 +31,9 @@ export function SettingsPage({ active, onTabChange, onSaved, diagnostics }: {
   return (
     <section className="settings-page">
       <nav className="workspace-tabs" aria-label="设置分类">
-        {tabs.map(({ key, label }) =>
+        {tabs.map(({ key, label, icon: Icon }) =>
           <button key={key} type="button" aria-pressed={active === key}
-            onClick={() => onTabChange(key)}>{label}</button>)}
+            onClick={() => onTabChange(key)}><Icon size={17} aria-hidden="true" />{label}</button>)}
       </nav>
       {active === "profile" && <Profile onSaved={onSaved} />}
       {active === "replies" && <Replies />}
@@ -131,6 +131,9 @@ export function ConnectionDiagnostics({
           <Monitor size={21} /><strong>检查当前页面</strong>
           {!browser.pinned_target && <span className="workspace-tag">绑定标签后可用</span>}
         </Button>
+        <Button variant="secondary" className="settings-diagnostic-row" disabled={!desktop || busy} onClick={onDemo}>
+          <Play size={21} /><strong>运行本地演示</strong><ArrowRight size={20} />
+        </Button>
         <details className="settings-diagnostic-details" open={diagnostic ? true : undefined}>
           <summary className="settings-diagnostic-row"><FileText size={21} /><strong>诊断详情</strong><ChevronDown size={20} /></summary>
           {diagnostic ? <div className="settings-diagnostic-body">
@@ -140,9 +143,6 @@ export function ConnectionDiagnostics({
             {diagnostic.diagnostic_path && <code>{diagnostic.diagnostic_path}</code>}
           </div> : <p className="settings-diagnostic-body muted">检查当前页面后显示本次诊断。</p>}
         </details>
-        <Button variant="secondary" className="settings-diagnostic-row" disabled={!desktop || busy} onClick={onDemo}>
-          <Play size={21} /><strong>运行本地演示</strong><ArrowRight size={20} />
-        </Button>
       </div>
     </section>
   );

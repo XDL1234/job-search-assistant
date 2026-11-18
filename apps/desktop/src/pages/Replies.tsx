@@ -65,8 +65,8 @@ export function Replies() {
     <section className="settings-rules" aria-label="回复规则">
       {error && <div className="banner error" role="alert">{error}</div>}
       {notice && <div className="banner" role="status">{notice}</div>}
-      <fieldset className="settings-unknown" disabled={!loaded || busy}>
-        <strong>未命中规则时</strong>
+      <fieldset className="settings-unknown" disabled={!loaded || busy} aria-labelledby="settings-unknown-mode">
+        <strong id="settings-unknown-mode">未命中规则时</strong>
         {[["human", "提醒我回答"], ["ai", "AI 根据资料拟答"]].map(([key, text]) =>
           <label key={key}><input type="radio" name="unknown-reply-mode" value={key} checked={mode === key}
             onChange={() => { setMode(key); setNotice(""); }} />{text}</label>)}
@@ -94,32 +94,34 @@ export function Replies() {
           <h2>编辑话术</h2>
           {rule ? (
             <fieldset disabled={!loaded || busy}>
-              <label>匹配条件
-                <select aria-label="问题类别" value={rule.category}
-                  onChange={(event) => update({ category: event.target.value, when: {} })}>
-                  {Object.entries(categories).map(([key, category]) => <option key={key} value={key}>{category.label}</option>)}
-                </select>
-              </label>
-              {rule.category === "salary" && <label>可接受的税前月薪下限（元）
-                <input type="number" min={0} value={(rule.when.salary_monthly_gross as { gte?: number })?.gte ?? ""}
-                  onChange={(event) => update({ when: event.target.value ? { salary_monthly_gross: { gte: Number(event.target.value) } } : {} })} />
-              </label>}
-              {rule.category === "location" && <label>可接受的工作城市
-                <input value={(rule.when.city as { in?: string[] })?.in?.join("、") || ""}
-                  onChange={(event) => update({ when: { city: { in: event.target.value.split(/[、,，]/) } } })}
-                  onBlur={(event) => {
-                    const cities = event.target.value.split(/[、,，]/).map((value) => value.trim()).filter(Boolean);
-                    update({ when: cities.length ? { city: { in: cities } } : {} });
-                  }} placeholder="多个城市用逗号分隔" />
-              </label>}
-              <label>回复原文<textarea rows={5} value={rule.reply} onChange={(event) => update({ reply: event.target.value })} /></label>
+              <div className="settings-rule-match">
+                <label>匹配条件
+                  <select aria-label="问题类别" value={rule.category}
+                    onChange={(event) => update({ category: event.target.value, when: {} })}>
+                    {Object.entries(categories).map(([key, category]) => <option key={key} value={key}>{category.label}</option>)}
+                  </select>
+                </label>
+                {rule.category === "salary" && <label>可接受的税前月薪下限（元）
+                  <input type="number" min={0} value={(rule.when.salary_monthly_gross as { gte?: number })?.gte ?? ""}
+                    onChange={(event) => update({ when: event.target.value ? { salary_monthly_gross: { gte: Number(event.target.value) } } : {} })} />
+                </label>}
+                {rule.category === "location" && <label>可接受的工作城市
+                  <input value={(rule.when.city as { in?: string[] })?.in?.join("、") || ""}
+                    onChange={(event) => update({ when: { city: { in: event.target.value.split(/[、,，]/) } } })}
+                    onBlur={(event) => {
+                      const cities = event.target.value.split(/[、,，]/).map((value) => value.trim()).filter(Boolean);
+                      update({ when: cities.length ? { city: { in: cities } } : {} });
+                    }} placeholder="多个城市用逗号分隔" />
+                </label>}
+              </div>
+              <label>回复原文<textarea rows={4} value={rule.reply} onChange={(event) => update({ reply: event.target.value })} /></label>
               <div className="settings-rule-controls">
                 <label>启用状态
                   <select value={String(rule.enabled)} onChange={(event) => update({ enabled: event.target.value === "true" })}>
                     <option value="false">关闭</option><option value="true">启用</option>
                   </select>
                 </label>
-                <Button variant="ghost" onClick={() => {
+                <Button variant="ghost" className="settings-rule-remove" onClick={() => {
                   setRules((value) => value.filter((entry) => entry.id !== rule.id));
                   select("");
                   setNotice("");
@@ -128,7 +130,7 @@ export function Replies() {
             </fieldset>
           ) : <p className="muted">添加话术后可编辑匹配条件和回复原文。</p>}
           <div className="settings-interview-lock"><LockKeyhole size={19} />面试邀约始终转人工</div>
-          <Button disabled={!loaded || busy} onClick={() => void save()}>保存回复规则</Button>
+          <div className="settings-rule-footer"><Button disabled={!loaded || busy} onClick={() => void save()}>保存回复规则</Button></div>
         </section>
       </div>
     </section>

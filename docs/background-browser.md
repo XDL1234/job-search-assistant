@@ -49,7 +49,7 @@ BOSS 三种投递模式均可使用已保存条件，或沿用已绑定标签页
 
 ## 最新版本与迁移验证
 
-最新安装版及其验收边界见 [beta.10 说明](releases/v0.3.0-beta.10.md)。以下为 beta.5 原生浏览器迁移时的历史记录。
+浏览器底座及其验收边界见 [beta.10 说明](releases/v0.3.0-beta.10.md)。当前[界面测试版](releases/v0.3.0-beta.12.md)沿用该底座。以下为 beta.5 原生浏览器迁移时的历史记录。
 
 2026-11-18 新底座：已完成固定来源构建、认证与只读流、ACK 最新帧、非首标签绑定、关闭/离域停止和旧订阅保护的隔离 Chrome 检查。真实用户 Chrome 已完成原生配对；真实 BOSS 的脚本模式、平台推荐 AI 模式、AI 精筛各完成一次开聊，台账均为 `greet=succeeded`，三轮任务全部暂停。精筛本轮使用 1 个 turn，input 6277、output 234、total 6511 token，图片数为 0。开聊成功不代表附件、回复或网申已通过验收。固定运行时与补丁哈希见 [JPEG 设计](design/jpeg-stream-agent-browser.md)，详细进度见[五轮迭代记录](superpowers/plans/2026-11-18-agent-browser-iterations.md)。
 

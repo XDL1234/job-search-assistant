@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Building2, CalendarDays, ChevronRight, CircleAlert, CircleCheck, ClipboardList, Clock3, Info, Send, ShieldCheck, SquarePen } from "lucide-react";
+import { Building2, CalendarDays, ChevronRight, CircleAlert, CircleCheck, ClipboardList, Info, Send, ShieldCheck, SquarePen } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { native, request } from "../bridge";
 import type { Snapshot } from "../contracts";
@@ -92,7 +92,7 @@ export function Inbox({ snapshot, onChanged, initialCategory }: Props) {
   return (
     <section className="inbox-page">
       <header className="workspace-title"><h1>待办</h1></header>
-      <nav className="workspace-tabs" aria-label="待办分类">
+      <nav className="workspace-tabs inbox-tabs" aria-label="待办分类">
         {categories.map(({ key, label }) => (
           <button type="button" key={key} aria-pressed={filter === key} onClick={() => { setFilter(key); select(""); }}>
             {label}<span className="workspace-count">{key === "all" ? pending.length :
@@ -107,16 +107,17 @@ export function Inbox({ snapshot, onChanged, initialCategory }: Props) {
               const { company, job, message, reason } = attentionDetails(snapshot, item);
               const category = attentionCategory(item.reason);
               const Icon = category === "interview" ? CalendarDays : category === "review" ? Building2 : ClipboardList;
+              const created = timeLabel(item.created);
               return <button type="button" key={item.id} className="inbox-entry"
-                aria-pressed={opened.id === item.id} onClick={() => select(item.id)}>
+                aria-pressed={opened.id === item.id} data-category={category} onClick={() => select(item.id)}>
                 <span className="workspace-icon"><Icon size={19} /></span>
                 <span className="inbox-entry-copy">
                   <strong>{company ? (category === "interview" && job ? `${company} · ${job}` : company) :
                     job || categories.find(({ key }) => key === category)?.label}</strong>
                   <span>{message?.text || job || reason}</span>
+                  {created && <time dateTime={item.created}>{created}</time>}
                 </span>
-                {timeLabel(item.created) && <time dateTime={item.created}><Clock3 size={14} />{timeLabel(item.created)}</time>}
-                {category === "interview" && <ChevronRight size={16} />}
+                <ChevronRight size={16} aria-hidden="true" />
               </button>;
             })}
           </div>

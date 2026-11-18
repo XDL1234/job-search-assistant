@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Download, Ellipsis, Info, Layers, Maximize2, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Download, FileImage, Info, Layers, Maximize2, Search, X } from "lucide-react";
 import { request } from "../bridge";
 import { Button } from "../components/ui/button";
 import type { Attempt, Snapshot } from "../contracts";
@@ -271,7 +271,7 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
   return <section className="records-page" aria-label="投递记录">
     <div className="records-heading">
       <div><h1>投递记录</h1><RecordDatePicker filter={filter} onChange={setFilter} dates={availableDays} /></div>
-      <Button variant="secondary" className="records-export" title="导出全部投递记录"
+      <Button className="records-export" title="导出全部投递记录"
         disabled={exporting || !isTauri()} onClick={onExport}><Download size={18} />导出 Excel</Button>
     </div>
     <div className="records-content">
@@ -280,16 +280,18 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
           <label className="records-search"><Search size={19} />
             <input aria-label="搜索记录" placeholder="搜索公司或岗位" value={query} onChange={(event) => setQuery(event.target.value)} />
           </label>
-          <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
-            <option value="">全部渠道</option><option value="boss">BOSS</option><option value="web">官网</option>
-          </select>
-          <select aria-label="投递结果" value={result} onChange={(event) => setResult(event.target.value)}>
-            <option value="">全部结果</option>
-            {Object.entries(resultLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-          </select>
-          <select aria-label="更新时间排序" value={sort} onChange={(event) => setSort(event.target.value)}>
-            <option value="newest">最近更新</option><option value="oldest">最早更新</option>
-          </select>
+          <div className="records-filter-options">
+            <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
+              <option value="">全部渠道</option><option value="boss">BOSS</option><option value="web">官网</option>
+            </select>
+            <select aria-label="投递结果" value={result} onChange={(event) => setResult(event.target.value)}>
+              <option value="">全部结果</option>
+              {Object.entries(resultLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+            <select aria-label="更新时间排序" value={sort} onChange={(event) => setSort(event.target.value)}>
+              <option value="newest">最近更新</option><option value="oldest">最早更新</option>
+            </select>
+          </div>
         </div>
         {filter.kind !== "all" && <p className="records-count" role="status">{scope} · {records.length} 条记录</p>}
         <div className="records-table-scroll"><table>
@@ -300,14 +302,16 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
             const updated = new Date(record.updated);
             const day = localDay(updated);
             return <tr key={record.id} data-selected={selected?.id === record.id} onClick={() => setSelectedId(record.id)}>
-              <td><button className="records-select" aria-pressed={selected?.id === record.id} onClick={() => setSelectedId(record.id)}>
-                {record.company} · {record.job}
+              <td><button className="records-select" aria-pressed={selected?.id === record.id}
+                title={`${record.company} · ${record.job}`} onClick={() => setSelectedId(record.id)}>
+                <strong>{record.company}</strong>
+                <span>{record.job}</span>
               </button></td>
               <td><span className="records-channel">{channelLabel(record.channel)}</span></td>
               <td><span className={`records-result ${record.status}`}>{resultLabel(record)}</span></td>
               <td>{day ? <time dateTime={record.updated} title={fullTime(record.updated)}>{day.slice(5)} {timeLabel.format(updated)}</time> : "—"}</td>
               <td><button className="records-more" aria-label="查看证据" title="查看证据" onClick={() => { setSelectedId(record.id); setTab("evidence"); }}>
-                <Ellipsis size={19} />
+                <FileImage size={17} />
               </button></td>
             </tr>;
           })}</tbody>

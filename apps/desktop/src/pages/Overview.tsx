@@ -1,4 +1,4 @@
-import { ArrowUpRight, BriefcaseBusiness, Building2, CalendarDays, CheckCircle2, ChevronRight, ClipboardList, Ellipsis, Plus } from "lucide-react";
+import { Activity, ArrowUpRight, BriefcaseBusiness, Building2, CalendarDays, CheckCircle2, ChevronRight, ClipboardList, Ellipsis, MessagesSquare, Plus } from "lucide-react";
 import { Button } from "../components/ui/button";
 import type { Snapshot } from "../contracts";
 import { beginningOfWeek, confirmedActions, displayTime, isActiveRun, runName, runStatus } from "../workspace";
@@ -40,13 +40,13 @@ export function Overview({ snapshot, profileReady, classify, onNew, onRun, onTod
       <Button onClick={onNew}><Plus size={19} /> 新建投递</Button>
     </header>
     <dl className="overview-stats">
-      <div><dt>运行中</dt><dd>{active.length}</dd></div>
-      <div><dt>待办</dt><dd>{pending.length}</dd></div>
-      <div><dt>本周已沟通</dt><dd>{communicated}</dd></div>
+      <div className="card overview-stat"><dt>运行中</dt><dd>{active.length}</dd><Activity size={20} aria-hidden="true" /></div>
+      <div className="card overview-stat"><dt>待办</dt><dd>{pending.length}</dd><ClipboardList size={20} aria-hidden="true" /></div>
+      <div className="card overview-stat"><dt>本周已沟通</dt><dd>{communicated}</dd><MessagesSquare size={20} aria-hidden="true" /></div>
     </dl>
     <div className="overview-grid">
       <div className="overview-primary">
-        <section aria-label="当前任务">
+        <section className="card overview-panel" aria-label="当前任务">
           <h2>当前任务</h2>
           {current.length ? <div className="overview-runs">
             {current.map((run) => {
@@ -65,7 +65,7 @@ export function Overview({ snapshot, profileReady, classify, onNew, onRun, onTod
             })}
           </div> : <div className="overview-empty">暂无进行中或暂停的投递任务</div>}
         </section>
-        <section aria-label="最近结果">
+        <section className="card overview-panel" aria-label="最近结果">
           <div className="section-title"><h2>最近结果</h2><button className="text-button" onClick={onRecords}>查看记录 <ChevronRight size={15} /></button></div>
           {recent.length ? <div className="overview-results">{recent.map((row) => <button key={row.id} onClick={onRecords}>
             <Building2 size={18} /><strong>{row.company}</strong><span>{row.job}</span>
