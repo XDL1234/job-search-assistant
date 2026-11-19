@@ -12,9 +12,16 @@ from .policy import decide_reply, select_job
 from .store import Store, now, packed
 
 
+def read_profile(config):
+    path = config.get('profile_path')
+    return load_json(path) if path else {}
+
+
 def verify_materials(store, run_id):
     config = json.loads(store.one('runs', run_id)['config'])
     for label in ('resume', 'profile'):
+        if config['channels'] == ['web'] and config[label + '_path'] == config[label + '_sha256'] == '':
+            continue
         path = Path(config[label + '_path'])
         if not path.is_file() or digest_file(path) != config[label + '_sha256']:
             raise ValueError(f'{label} 资料已变更或丢失；请重新确认本轮材料')
@@ -43,12 +50,15 @@ def prepare_config(value):
                 raise ValueError('自动设置的城市与本轮沟通城市不一致')
             config['cities'] = [city]
     for label in ('resume', 'profile'):
+        if config['channels'] == ['web'] and config.get(label + '_path') in (None, ''):
+            config[label + '_path'] = config[label + '_sha256'] = ''
+            continue
         path = Path(config.get(label + '_path', '')).resolve()
         if not path.is_file():
             raise ValueError(f'缺少 {label} 文件')
         config[label + '_path'] = str(path)
         config[label + '_sha256'] = digest_file(path)
-    if not isinstance(load_json(config['profile_path']), dict):
+    if not isinstance(read_profile(config), dict):
         raise ValueError('个人资料需先归一化为 JSON 对象')
     if 'web' in config['channels']:
         config['company_table'] = str(Path(config['company_table']).resolve(strict=True))
@@ -152,7 +162,7 @@ def _dispatch(store, request):
         if state['latest_message'] != request['message_key']:
             return {'action': 'skip', 'reason': 'old_message'}
         result = decide_reply(request['text'], config['rules'], config.get('unknown_reply_mode', 'human'),
-                              request.get('analysis'), load_json(config['profile_path']), request.get('draft', ''),
+                              request.get('analysis'), read_profile(config), request.get('draft', ''),
                               request.get('sources'), state['status'] == 'human')
         if result['action'] == 'human':
             result['attention'] = store.handoff(conversation, result['reason'])
@@ -168,7 +178,7 @@ def _dispatch(store, request):
             if not message:
                 raise ValueError('先记录并判断对方消息')
             decision = decide_reply(message[0], config['rules'], config.get('unknown_reply_mode', 'human'),
-                                    request.get('analysis'), load_json(config['profile_path']), payload.get('text', ''),
+                                    request.get('analysis'), read_profile(config), payload.get('text', ''),
                                     request.get('sources'), state['status'] == 'human')
             if decision['action'] != request['kind']:
                 if decision['action'] == 'human':

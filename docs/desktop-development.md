@@ -1,6 +1,6 @@
 # 桌面开发预览
 
-当前版本与验证范围见 [beta.12 说明](releases/v0.3.0-beta.12.md)。原生浏览器与 JPEG 底座的迁移过程见[迭代记录](superpowers/plans/2026-11-18-agent-browser-iterations.md)。下文保留早期探针和开发记录。
+当前版本与验证范围见 [v1.0.0 说明](releases/v1.0.0.md)。原生浏览器与 JPEG 底座的迁移过程见[迭代记录](superpowers/plans/2026-11-18-agent-browser-iterations.md)。下文保留早期探针和开发记录。
 
 2026-11-17：源码已进入 beta.2 迭代，资料、配置和后台连接的说明以 [beta.2 更新](releases/v0.3.0-beta.2.md) 与 [浏览器后台说明](background-browser.md)为准。下文的 beta.1 探针与失败记录作为历史保留，不能替代新通路的真实验收。
 

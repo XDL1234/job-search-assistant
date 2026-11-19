@@ -3,6 +3,7 @@ import argparse
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -11,14 +12,16 @@ import sys
 import time
 import urllib.request
 import uuid
+from xml.sax.saxutils import escape
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'skills/job-search-assistant/scripts'))
 from desktop_dev import environment
 from desktop_app_smoke import close_window
-from desktop_save_dialog import answer_export_dialog
-from job_assistant.profiles import extract_profile, save_profile
+from desktop_save_dialog import answer_export_dialog, answer_open_dialog
+from job_assistant.profiles import extract_profile, save_personal_info, save_profile
 from job_assistant.store import Store
 from playwright.sync_api import expect, sync_playwright
 
@@ -182,6 +185,157 @@ def check_record_dates(page, pid, data, folder):
     assert destination.is_file() and not (data / 'results.xlsx').exists()
 
 
+def write_resume_fixtures(folder):
+    docx = folder / '合成简历.docx'
+    text = ('姓名：林示例', '邮箱：resume@example.invalid', '教育经历', '学校名称：合成大学',
+            '学历：本科', '项目经历', '项目名称：示例控制板', '开始时间：2024-02', '结束时间：至今',
+            '项目描述：离线验证')
+    ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    paragraphs = ''.join(f'<w:p><w:r><w:t>{escape(line)}</w:t></w:r></w:p>' for line in text)
+    with ZipFile(docx, 'w') as archive:
+        archive.writestr('[Content_Types].xml',
+                         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                         '</Types>')
+        archive.writestr('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                         'Target="word/document.xml"/></Relationships>')
+        archive.writestr('word/document.xml', f'<w:document xmlns:w="{ns}"><w:body>{paragraphs}</w:body></w:document>')
+
+    pdf = folder / '合成简历.pdf'
+    stream = b'BT /F1 12 Tf 72 720 Td (Synthetic PDF resume) Tj ET\n'
+    objects = (
+        b'<< /Type /Catalog /Pages 2 0 R >>',
+        b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+        b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+        b'<< /Length %d >>\nstream\n' % len(stream) + stream + b'endstream',
+    )
+    content = bytearray(b'%PDF-1.4\n')
+    offsets = []
+    for index, obj in enumerate(objects, 1):
+        offsets.append(len(content))
+        content.extend(b'%d 0 obj\n%s\nendobj\n' % (index, obj))
+    xref = len(content)
+    content.extend(b'xref\n0 %d\n0000000000 65535 f \n' % (len(offsets) + 1))
+    for offset in offsets:
+        content.extend(b'%010d 00000 n \n' % offset)
+    content.extend(b'trailer\n<< /Root 1 0 R /Size %d >>\nstartxref\n%d\n%%%%EOF\n' % (len(offsets) + 1, xref))
+    pdf.write_bytes(content)
+    return docx, pdf
+
+
+def check_resume_autofill(playwright, app, folder, env):
+    folder.mkdir()
+    docx, pdf = write_resume_fixtures(folder)
+    data = folder / 'data'
+    with closing(Store(data)) as store:
+        save_personal_info(store, {'name': '已保存姓名', 'education': [{'school': '已保存学校'}]})
+    profile_version = data / 'profiles/current.json'
+    saved = profile_version.read_bytes()
+
+    def expect_personal_info(page, project='示例控制板'):
+        expect(page.get_by_label('姓名', exact=True)).to_have_value('已保存姓名', timeout=15000)
+        expect(page.get_by_label('邮箱', exact=True)).to_have_value('resume@example.invalid')
+        schools = page.get_by_label('学校名称', exact=True)
+        expect(schools).to_have_count(2)
+        expect(schools.nth(0)).to_have_value('已保存学校')
+        expect(schools.nth(1)).to_have_value('合成大学')
+        projects = page.get_by_label('项目名称', exact=True)
+        expect(projects).to_have_count(1)
+        expect(projects).to_have_value(project)
+        expect(page.get_by_role('checkbox', name='至今', exact=True)).to_be_checked()
+
+    def expect_duplicate_skipped(page, project='示例控制板'):
+        page.get_by_role('button', name='从已导入简历填充', exact=True).click()
+        expect(page.get_by_role('status').filter(has_text='没有可填充的新信息')).to_be_visible(timeout=15000)
+        expect_personal_info(page, project)
+
+    with desktop_page(playwright, app, folder, env) as (page, pid):
+        open_settings(page, '简历')
+        page.get_by_role('button', name='导入简历', exact=True).click()
+        answer_open_dialog(pid, docx)
+        expect(page.get_by_role('status').filter(has_text='已从简历填充空白字段')).to_be_visible(timeout=15000)
+        expect_personal_info(page)
+        expect_duplicate_skipped(page)
+        assert profile_version.read_bytes() == saved, '导入和回填不应直接改写已保存的个人信息'
+        open_settings(page, '简历')
+        expect(page.get_by_text(docx.name, exact=True)).to_be_visible()
+        expect(page.locator('.settings-resume-text')).to_contain_text('项目名称：示例控制板')
+
+    with desktop_page(playwright, app, folder, env) as (page, _):
+        open_settings(page, '个人信息')
+        expect(page.get_by_label('姓名', exact=True)).to_have_value('已保存姓名', timeout=15000)
+        expect(page.get_by_label('邮箱', exact=True)).to_have_value('')
+        page.get_by_role('button', name='从已导入简历填充', exact=True).click()
+        expect_personal_info(page)
+        assert profile_version.read_bytes() == saved, '手动回填应等待用户保存'
+        set_field(page, '项目名称', '人工修订的项目名称')
+        expect_duplicate_skipped(page, '人工修订的项目名称')
+        page.get_by_role('button', name='保存个人信息', exact=True).click()
+        expect(page.get_by_role('status').filter(has_text='个人信息已保存')).to_be_visible(timeout=15000)
+
+    with desktop_page(playwright, app, folder, env) as (page, pid):
+        open_settings(page, '个人信息')
+        expect_personal_info(page, '人工修订的项目名称')
+        expect_duplicate_skipped(page, '人工修订的项目名称')
+        saved = profile_version.read_bytes()
+        open_settings(page, '简历')
+        page.get_by_role('button', name='更换简历', exact=True).click()
+        answer_open_dialog(pid, pdf)
+        expect(page.get_by_role('status').filter(has_text='未识别到可填充的个人信息')).to_be_visible(timeout=15000)
+        expect(page.get_by_text(pdf.name, exact=True)).to_be_visible(timeout=15000)
+        expect(page.locator('.settings-resume-text')).to_have_text('Synthetic PDF resume')
+        assert profile_version.read_bytes() == saved, '更换简历应保留已保存的个人信息'
+
+
+def check_scanned_resume(playwright, app, folder, env):
+    from PIL import Image, ImageDraw, ImageFont
+
+    folder.mkdir()
+    scanned = folder / '扫描简历.pdf'
+    bitmap = Image.new('RGB', (1240, 1754), 'white')
+    draw = ImageDraw.Draw(bitmap)
+    fonts = Path(os.environ['SystemRoot']) / 'Fonts'
+    font = ImageFont.truetype(str(fonts / 'arial.ttf'), 52)
+    draw.text((95, 150), '姓名：张三', font=ImageFont.truetype(str(fonts / 'msyh.ttc'), 52), fill='black')
+    lines = ('scanner@example.com', 'Projects', 'Project name: Motor Controller')
+    for index, line in enumerate(lines):
+        draw.text((95, 265 + 115 * index), line, font=font, fill='black')
+    bitmap.save(scanned, 'PDF', resolution=150)
+
+    data = folder / 'data'
+    with closing(Store(data)) as store:
+        save_personal_info(store, {'name': '已保存姓名'})
+    profile_version = data / 'profiles/current.json'
+    saved = profile_version.read_bytes()
+
+    with desktop_page(playwright, app, folder, env) as (page, pid):
+        open_settings(page, '简历')
+        page.get_by_role('button', name='导入简历', exact=True).click()
+        answer_open_dialog(pid, scanned)
+        expect(page.get_by_role('status').filter(has_text='已通过本机 OCR 补齐空白字段')).to_be_visible(timeout=60000)
+        expect(page.get_by_label('姓名', exact=True)).to_have_value('已保存姓名')
+        expect(page.get_by_label('邮箱', exact=True)).to_have_value('scanner@example.com')
+        expect(page.get_by_label('项目名称', exact=True)).to_have_value('Motor Controller')
+        assert profile_version.read_bytes() == saved, 'OCR 回填应等待用户核对并保存'
+
+        page.get_by_role('button', name='保存个人信息', exact=True).click()
+        expect(page.get_by_role('status').filter(has_text='个人信息已保存')).to_be_visible(timeout=15000)
+        profile = json.loads(profile_version.read_text(encoding='utf-8'))['profile']
+        assert profile['contact']['email'] == 'scanner@example.com'
+        assert profile['projects'][0]['name'] == 'Motor Controller'
+
+        open_settings(page, '简历')
+        expect(page.get_by_role('region', name='简历', exact=True).get_by_text(scanned.name, exact=True)).to_be_visible()
+        expect(page.get_by_text('第 1 页使用本机 OCR，请对照原件核对。', exact=True)).to_be_visible(timeout=60000)
+        expect(page.locator('.settings-resume-text')).to_contain_text('张三')
+        expect(page.locator('.settings-resume-text')).to_contain_text('Motor Controller')
+        archived = json.loads((data / 'resumes/current.json').read_text(encoding='utf-8'))
+        assert Path(archived['path']).read_bytes() == scanned.read_bytes(), '留存的附件应是原始扫描 PDF'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, default=ROOT / 'apps/desktop/src-tauri/target/debug/job-search-desktop.exe')
@@ -226,8 +380,24 @@ def main():
             with desktop_page(playwright, args.app.resolve(), folder, env) as (page, _):
                 nav = page.get_by_role('navigation', name='主导航').get_by_role('button').all_inner_texts()
                 assert nav == ['总览', '投递任务', '待办', '投递记录'], nav
-                open_settings(page, '资料与简历')
+                open_settings(page, '个人信息')
                 expect(page.get_by_text('已保存资料', exact=True)).to_be_visible(timeout=15000)
+                close_control = page.get_by_role('button', name='关闭应用', exact=True)
+                close_before = close_control.bounding_box()
+                page.evaluate("document.querySelector('.workspace-scroll').scrollTop = 1000")
+                assert page.evaluate("document.querySelector('.workspace-scroll').scrollTop") > 0
+                assert page.evaluate('window.scrollY') == 0 and close_control.bounding_box() == close_before
+                page.evaluate("document.querySelector('.workspace-scroll').scrollTop = 0")
+                identifier = page.get_by_label('身份证号', exact=True)
+                expect(identifier).to_have_attribute('type', 'password')
+                page.get_by_role('button', name='添加教育经历').click()
+                page.get_by_label('学校名称', exact=True).fill('合成学校')
+                page.get_by_role('button', name='保存个人信息', exact=True).click()
+                expect(page.get_by_role('status').filter(has_text='个人信息已保存')).to_be_visible()
+                open_settings(page, '简历')
+                expect(page.get_by_text(resume.name, exact=True)).to_be_visible()
+                expect(page.get_by_role('heading', name='简历预览')).to_be_visible()
+                expect(page.get_by_role('button', name='打开原件')).to_be_enabled()
                 report['profile'] = 'passed'
 
                 open_task(page)
@@ -272,6 +442,9 @@ def main():
                 page.screenshot(path=str(folder / 'boss-preferences.png'))
 
             with desktop_page(playwright, args.app.resolve(), folder, env) as (page, pid):
+                open_settings(page, '个人信息')
+                expect(page.get_by_label('学校名称', exact=True)).to_have_value('合成学校')
+                expect(page.get_by_label('身份证号', exact=True)).to_have_value('')
                 open_task(page)
                 drawer = edit_preferences(page)
                 expect(drawer.get_by_label('求职城市', exact=True)).to_have_value('深圳', timeout=15000)
@@ -382,10 +555,10 @@ def main():
                 open_task(page)
                 page.get_by_role('button', name='公司网申', exact=True).click()
                 expect(page.get_by_role('button', name='选择公司表')).to_be_visible()
-                page.get_by_text('调整网页填写设置', exact=True).click()
-                expect(page.get_by_label('网申求职类型', exact=True)).to_have_value('any')
-                expect(page.get_by_label('岗位方向', exact=True)).to_have_value(profile_role)
-                expect(page.get_by_label('目标浏览器标题', exact=True)).to_have_value('Google Chrome')
+                expect(page.get_by_text('调整网页填写设置', exact=True)).to_have_count(0)
+                expect(page.get_by_label('目标浏览器标题', exact=True)).to_have_count(0)
+                expect(page.get_by_role('button', name='编辑个人信息')).to_be_visible()
+                expect(page.get_by_role('button', name='管理简历')).to_be_visible()
                 page.get_by_label('公司表路径', exact=True).fill(str(companies))
                 page.get_by_role('button', name='读取公司表', exact=True).click()
                 expect(page.get_by_text('缺失网址', exact=True)).to_be_visible()
@@ -417,6 +590,10 @@ def main():
                 probe = json.loads(subprocess.check_output([runtime['executable'], '--job-assistant-probe'], env=env, text=True))
                 assert probe['embedded_auth'] and probe['read_only'] and probe['capabilities']['existing_daemon_only']
                 report['native_runtime_without_browser_connection'] = 'passed'
+            check_resume_autofill(playwright, args.app.resolve(), folder / 'resume-autofill', env)
+            report['resume_import_prefills_personal_draft'] = 'passed'
+            check_scanned_resume(playwright, args.app.resolve(), folder / 'resume-ocr', env)
+            report['local_ocr_resume_import_prefills_personal_draft'] = 'passed'
         report['native_close'] = 'passed'
     except Exception as error:
         report['error'] = str(error)

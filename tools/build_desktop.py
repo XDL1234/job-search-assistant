@@ -1,4 +1,4 @@
-"""构建可安装的 Windows 测试版；只复制 Skill 白名单和官方依赖发行文件。"""
+"""构建 Windows MSI 和 EXE 安装包，只复制 Skill 白名单和官方依赖发行文件。"""
 import argparse
 import hashlib
 import importlib.metadata
@@ -19,6 +19,7 @@ BUILD = ROOT / '.verification/desktop-release'
 CODEX_VERSION = '0.156.1'
 PYINSTALLER_VERSION = '6.15.0'
 AGENT_FILES = ('agent-browser.exe', 'runtime-manifest.json', 'LICENSE-APACHE-2.0.txt', 'NOTICE.txt')
+OCR_REQUIREMENTS = ('rapidocr==3.10.0', 'onnxruntime==1.32.0', 'pypdfium2==5.15.2')
 
 
 def resource_manifest(directory):
@@ -55,6 +56,24 @@ def run(args, **kwargs):
     subprocess.run([str(a) for a in args], check=True, **kwargs)
 
 
+def collect_python_notices(python, destination, env):
+    # Python 包许可证进入分发资源，PyInstaller 自带 PSF Python 许可证。
+    code = """import importlib.metadata as m, pathlib, shutil, sys
+dest=pathlib.Path(sys.argv[1]); dest.mkdir(parents=True,exist_ok=True)
+for d in m.distributions():
+ for f in d.files or []:
+  if any(marker in f.as_posix().lower() for marker in ('license', 'copying', 'notice')):
+   source=d.locate_file(f)
+   if source.is_file():
+    relative=pathlib.Path(f.name)
+    if len(f.parts)>2 and f.parts[0].endswith('.dist-info') and f.parts[1]=='licenses':
+     relative=pathlib.Path(*f.parts[2:])
+    target=dest/d.metadata['Name']/relative
+    target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(source,target)
+"""
+    run([python, '-c', code, destination], env=env)
+
+
 def build_worker(env):
     sys.path.insert(0, str(ROOT/'skills/job-search-assistant/scripts'))
     from job_assistant.bootstrap import source_files, tree_hash
@@ -64,7 +83,7 @@ def build_worker(env):
     manifest = json.loads((ROOT/'skills/job-search-assistant/dependencies.json').read_text())
     requirements = [f"{p['name']}=={p['version']}" for p in manifest['packages']]
     run([python, '-m', 'pip', '--isolated', 'install', '--disable-pip-version-check', '--index-url', 'https://pypi.org/simple',
-         f'PyInstaller=={PYINSTALLER_VERSION}', *requirements], env=env)
+         f'PyInstaller=={PYINSTALLER_VERSION}', *requirements, *OCR_REQUIREMENTS], env=env)
     run([python, '-m', 'pip', 'check'], env=env)
     stage = BUILD/('stage-' + uuid.uuid4().hex[:8])
     skill = stage/'skill'
@@ -74,23 +93,14 @@ def build_worker(env):
         target = skill/path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    # Python 包许可证进入分发资源，PyInstaller 自带 PSF Python 许可证。
-    code = """import importlib.metadata as m, pathlib, shutil, sys
-dest=pathlib.Path(sys.argv[1]); dest.mkdir(parents=True,exist_ok=True)
-for d in m.distributions():
- for f in d.files or []:
-  if 'license' in str(f).lower() or 'copying' in str(f).lower():
-   p=d.locate_file(f)
-   if p.is_file():
-    t=dest/d.metadata['Name']/pathlib.Path(str(f)).name
-    t.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,t)
-"""
-    run([python, '-c', code, skill/'third-party-licenses'], env=env)
+    collect_python_notices(python, skill/'third-party-licenses', env)
     env = {**env, 'PYINSTALLER_CONFIG_DIR': str(BUILD/'pyinstaller-cache')}
     run([python, '-m', 'PyInstaller', '--noconfirm', '--onedir', '--name', 'worker',
          '--distpath', RESOURCES, '--workpath', stage/'work', '--specpath', stage,
          '--paths', skill/'scripts', '--add-data', f'{skill};skill',
-         '--collect-all', 'pyautogui', '--collect-all', 'openpyxl', skill/'scripts/run.py'], env=env, cwd=ROOT)
+         '--collect-all', 'pyautogui', '--collect-all', 'openpyxl',
+         '--collect-data', 'rapidocr', '--hidden-import', 'onnxruntime', '--collect-binaries', 'onnxruntime',
+         '--collect-data', 'pypdfium2_raw', '--collect-binaries', 'pypdfium2_raw', skill/'scripts/run.py'], env=env, cwd=ROOT)
     if tree_hash(source) != source_hash:
         raise ValueError('构建期间 Skill 源码发生变化，请稳定源码后重新构建')
     worker = RESOURCES/'worker/worker.exe'
@@ -242,7 +252,8 @@ def main():
     env=environment()
     BUILD.mkdir(parents=True,exist_ok=True)
     (BUILD/'temp').mkdir(exist_ok=True)
-    env.update({'TEMP':str(BUILD/'temp'),'TMP':str(BUILD/'temp'),'PIP_CACHE_DIR':str(BUILD/'pip-cache')})
+    # WiX 的 Windows Installer 校验使用系统临时目录，构建目录只用于 Python 打包。
+    build_env = {**env, 'TEMP': str(BUILD/'temp'), 'TMP': str(BUILD/'temp'), 'PIP_CACHE_DIR': str(BUILD/'pip-cache')}
     RESOURCES.mkdir(exist_ok=True)
     if RESOURCES.is_symlink() or RESOURCES.resolve().parent != TAURI.resolve():
         raise ValueError('不安全的构建资源目录')
@@ -257,16 +268,19 @@ def main():
             copy_codex(env,cached_codex)
         env['JOB_ASSISTANT_CODEX']=str(cached_codex/'bin/codex.exe')
         clear_generated_resources()
-        build_worker(env)
+        build_worker(build_env)
         copy_codex(env)
         collect_notices(env)
         runtime = copy_agent_browser(agent_source)
         (RESOURCES/'THIRD-PARTY-NOTICES.txt').write_text(
-            '求职助手测试版包含：Python（PSF）、PyInstaller bootloader（GPL exception）、'
+            '求职助手包含：Python（PSF）、PyInstaller bootloader（GPL exception）、'
             'PyAutoGUI/Pillow/openpyxl 等依赖（许可证见 runtime/worker/_internal/skill/third-party-licenses）；'
             'Codex CLI 0.156.1（Apache-2.0，见 runtime/codex/LICENSE-APACHE-2.0.txt）。'
             'agent-browser 0.43.0 与本项目嵌入补丁（Apache-2.0，见 runtime/agent-browser 的 LICENSE 与 NOTICE）。'
             'Codex 附带组件的 notices/licenses 按官方发行目录保留。\n'
+            '本机 OCR 包含 RapidOCR（Apache-2.0）、ONNX Runtime（MIT）及 pypdfium2/PDFium。'
+            'OCR 模型由 RapidOCR 从 PaddleOCR 转换为 ONNX，模型权重版权属百度及相关 PaddleOCR 权利人，'
+            '许可见 https://rapidai.github.io/RapidOCRDocs/main/en/model_licenses/ 。\n'
             'Tauri、React 等组件源码与锁定版本见项目仓库 https://github.com/XDL1234/job-search-assistant 。\n', encoding='utf-8')
     else:
         runtime = verify_reused_resources()
@@ -274,18 +288,30 @@ def main():
     (RESOURCES/'resource-manifest.json').write_text(json.dumps({'codex':CODEX_VERSION,'agent_browser':runtime,'files':files},ensure_ascii=False,indent=2),encoding='utf-8')
     if args.resources_only:
         print(json.dumps({'resources':str(RESOURCES),'files':len(files)}));return
-    run([shutil.which('npm.cmd'), 'run', 'tauri', '--', 'build', '--config', 'src-tauri/tauri.bundle.conf.json', '--bundles', 'nsis'], cwd=ROOT/'apps/desktop', env=env)
+    config = json.loads((TAURI/'tauri.conf.json').read_text(encoding='utf-8'))
+    run([shutil.which('npm.cmd'), 'run', 'tauri', '--', 'build', '--config', 'src-tauri/tauri.bundle.conf.json'],
+        cwd=ROOT/'apps/desktop', env=env)
     output=ROOT/'dist/desktop'
     output.mkdir(parents=True,exist_ok=True)
-    version=json.loads((TAURI/'tauri.conf.json').read_text(encoding='utf-8'))['version']
-    artifacts=list((TAURI/'target/release/bundle/nsis').glob(f'*{version}*-setup.exe'))
-    if len(artifacts)!=1:raise ValueError('未得到唯一安装包')
-    dest=output/f'job-search-assistant-{version}-windows-x64-setup.exe'
-    shutil.copy2(artifacts[0],dest)
-    digest=hashlib.sha256(dest.read_bytes()).hexdigest()
-    (output/'SHA256SUMS.txt').write_text(f'{digest}  {dest.name}\n',encoding='ascii')
+    version=config['version']
+    bundles = TAURI/'target/release/bundle'
+    installers = [
+        ('msi', f'*_{version}_x64*.msi', f'job-search-assistant-{version}-windows-x64.msi'),
+        ('nsis', f'*_{version}_x64-setup.exe', f'job-search-assistant-{version}-windows-x64-setup.exe'),
+    ]
+    report, checksums = [], []
+    for kind, pattern, name in installers:
+        artifacts = list((bundles/kind).glob(pattern))
+        if len(artifacts) != 1:
+            raise ValueError(f'{kind} 未得到唯一安装包')
+        destination = output/name
+        shutil.copy2(artifacts[0], destination)
+        digest = file_hash(destination)
+        checksums.append(f'{digest}  {name}\n')
+        report.append({'installer': str(destination), 'sha256': digest, 'bytes': destination.stat().st_size})
+    (output/'SHA256SUMS.txt').write_text(''.join(checksums), encoding='ascii')
     shutil.copy2(RESOURCES/'resource-manifest.json',output/'resource-manifest.json')
-    print(json.dumps({'installer':str(dest),'sha256':digest,'bytes':dest.stat().st_size},ensure_ascii=False))
+    print(json.dumps({'installers': report}, ensure_ascii=False))
 
 
 if __name__=='__main__':

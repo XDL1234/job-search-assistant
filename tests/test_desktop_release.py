@@ -24,11 +24,14 @@ class DesktopReleaseTests(unittest.TestCase):
         config = json.loads((ROOT/'apps/desktop/src-tauri/tauri.conf.json').read_text(encoding='utf-8'))
         package = json.loads((ROOT/'apps/desktop/package.json').read_text())
         cargo = tomllib.loads((ROOT/'apps/desktop/src-tauri/Cargo.toml').read_text())
-        self.assertRegex(config['version'], r'^0\.\d+\.\d+-beta\.\d+$')
+        self.assertRegex(config['version'], r'^\d+\.\d+\.\d+$')
         self.assertEqual(package['version'], config['version'])
         self.assertEqual(cargo['package']['version'], config['version'])
-        self.assertEqual(config['bundle']['targets'], ['nsis'])
-        self.assertIn('测试版', config['productName'])
+        self.assertEqual(config['bundle']['targets'], ['msi', 'nsis'])
+        self.assertEqual(config['productName'], '求职助手')
+        self.assertEqual(config['bundle']['windows']['wix']['language'], 'zh-CN')
+        self.assertFalse(config['bundle']['windows']['allowDowngrades'])
+        self.assertEqual(config['bundle']['windows']['nsis']['installMode'], 'currentUser')
         self.assertEqual(config['bundle']['windows']['nsis']['languages'], ['SimpChinese'])
 
     def test_resource_manifest_rejects_personal_data(self):

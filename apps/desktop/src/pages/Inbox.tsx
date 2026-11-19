@@ -91,7 +91,9 @@ export function Inbox({ snapshot, onChanged, initialCategory }: Props) {
   const latest = opened && snapshot.conversations?.find((item) => item.id === opened.subject)?.latest_message;
   return (
     <section className="inbox-page">
-      <header className="workspace-title"><h1>待办</h1></header>
+      <header className="workspace-title inbox-page-title">
+        <h1>待办</h1><p>查看需要你决定的岗位、面试邀约和待人工处理的消息。</p>
+      </header>
       <nav className="workspace-tabs inbox-tabs" aria-label="待办分类">
         {categories.map(({ key, label }) => (
           <button type="button" key={key} aria-pressed={filter === key} onClick={() => { setFilter(key); select(""); }}>
@@ -193,10 +195,11 @@ function InboxItem({ snapshot, item, onChanged }: Props & { item: Attention }) {
           {interview && <span className="workspace-tag warning"><CircleAlert size={16} />面试邀约 · 由你回复</span>}
         </div>
         {interview && company && job && <p>{job}</p>}
-        {review && <><p>{[company, item.job_review?.city].filter(Boolean).join(" · ")}</p><span className="workspace-tag accent">岗位复核</span></>}
+        {review && <><p>{[company, item.job_review?.city].filter(Boolean).join(" · ")}</p><span className="workspace-tag accent">来源 · 岗位筛选</span></>}
         {!interview && !review && <p>{reason}</p>}
       </header>
       {review && <div className="inbox-review">
+        <p>筛选时有条件需要你确认。这里显示的是筛选记录。</p>
         {facts.length > 0 && <div className="inbox-facts"><CircleCheck size={21} /><strong>已确认</strong>
           <div>{facts.map((fact, index) => <span className="workspace-tag success" key={index}>{fact}</span>)}</div>
         </div>}
@@ -224,7 +227,7 @@ function InboxItem({ snapshot, item, onChanged }: Props & { item: Attention }) {
         {conversation?.status === "human" && !target &&
           <p className="muted">当前会话缺少唯一的活动任务绑定。可在 BOSS 回复，或在这里保存备注。</p>}
         <div className="inbox-actions">
-          {!conversation && <span className="muted"><Info size={16} />备注只在本机保存</span>}
+          {!conversation && <span className="muted"><Info size={16} />{review ? "标记已处理只关闭此待办" : "备注只在本机保存"}</span>}
           <div>
             {conversation ? (
               <>

@@ -31,7 +31,9 @@ pub(crate) fn ui_method_allowed(method: &str) -> bool {
     matches!(method,
         "health" | "snapshot" | "export_records" | "read_image" | "preview_demo"
             | "start_run" | "open_simulation" | "extract_profile" | "save_profile"
-            | "get_profile" | "preview_run" | "get_reply_settings" | "save_reply_settings"
+            | "get_profile" | "save_personal_info" | "get_resume" | "import_resume" | "preview_resume"
+            | "extract_resume_profile" | "open_resume"
+            | "preview_run" | "get_reply_settings" | "save_reply_settings"
             | "preview_reply" | "browser_status" | "attention_update"
             | "get_job_preferences" | "save_job_preferences" | "inspect_company_table" | "open_company_site")
 }
@@ -74,7 +76,7 @@ impl WorkerClient {
             .map(PathBuf::from)
             .or_else(|| (!cfg!(debug_assertions)).then(|| installed_worker(resources)).flatten());
         if !cfg!(debug_assertions) && executable.is_none() {
-            return Err("安装文件不完整：缺少内置执行器，请重新安装测试版".into());
+            return Err("安装文件不完整：缺少内置执行器，请重新安装求职助手".into());
         }
         let codex = std::env::var_os("JOB_ASSISTANT_CODEX")
             .map(PathBuf::from)
@@ -117,10 +119,19 @@ impl WorkerClient {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        let output = tokio::time::timeout(Duration::from_secs(45), command.output()).await;
+        let reads_profile = matches!(
+            request.method.as_str(),
+            "extract_profile" | "extract_resume_profile" | "preview_resume"
+        );
+        let timeout = Duration::from_secs(if reads_profile { 120 } else { 45 });
+        let output = tokio::time::timeout(timeout, command.output()).await;
         let _ = std::fs::remove_file(&path);
         let output = output
-            .map_err(|_| "执行器响应超时；请核查未决动作")?
+            .map_err(|_| if reads_profile {
+                "简历识别超时，请核对 PDF 页数和清晰度后重试"
+            } else {
+                "执行器响应超时；请核查未决动作"
+            })?
             .map_err(|e| format!("执行器未启动：{e}"))?;
         let value: Value =
             serde_json::from_slice(&output.stdout).map_err(|_| "执行器响应格式错误")?;

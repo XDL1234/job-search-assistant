@@ -80,14 +80,13 @@ def handle_app_request(store, request):
         elif method == 'read_image':
             data = Dashboard(store.root).image(store, params['kind'], params['identity'])
             result = {'url': 'data:image/png;base64,' + base64.b64encode(data).decode('ascii')}
-        elif method in ('extract_profile', 'save_profile', 'get_profile'):
+        elif method in ('extract_profile', 'save_profile', 'get_profile', 'save_personal_info',
+                        'get_resume', 'import_resume', 'preview_resume', 'extract_resume_profile', 'open_resume'):
             from . import profiles
             if method == 'extract_profile':
                 result = profiles.extract_profile(params['path'])
-            elif method == 'save_profile':
-                result = profiles.save_profile(store, **params)
             else:
-                result = profiles.get_profile(store)
+                result = getattr(profiles, method)(store, **params)
         elif method in ('preview_demo', 'preview_run', 'start_run', 'revise_run', 'control_run', 'recover_app', 'bind_session', 'execution_context', 'activate_run', 'open_simulation'):
             from . import app_runs
             if method == 'preview_demo':

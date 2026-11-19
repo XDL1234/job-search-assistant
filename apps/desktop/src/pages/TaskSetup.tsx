@@ -42,6 +42,7 @@ export function TaskSetup({
   onCreated,
   onSwitchChannel,
   onBack,
+  onMaterials,
   browserReady = false,
   codexReady = false,
 }: {
@@ -51,6 +52,7 @@ export function TaskSetup({
   onCreated: (id: string) => void;
   onSwitchChannel?: (channel: "boss" | "web") => void;
   onBack?: () => void;
+  onMaterials?: (tab: "profile" | "resume") => void;
   browserReady?: boolean;
   codexReady?: boolean;
 }) {
@@ -65,9 +67,6 @@ export function TaskSetup({
   const [preferences, setPreferences] = useState<JobPreferences | null>(() => preferencesFromRun(initialRun));
   const [editorOpen, setEditorOpen] = useState(false);
   const [roles, setRoles] = useState(seed.roles ?? "");
-  const [title, setTitle] = useState(seed.title);
-  const [webEmployment, setWebEmployment] = useState<EmploymentType | undefined>(seed.webEmployment);
-  const [webRequirements, setWebRequirements] = useState(seed.webRequirements);
   const [limit, setLimit] = useState(seed.limit);
   const [tablePath, setTablePath] = useState(seed.tablePath);
   const [table, setTable] = useState<CompanyInspection>();
@@ -75,21 +74,23 @@ export function TaskSetup({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [profile, setProfile] = useState<{ profile: { target_role?: string }; resume_path?: string } | null>();
+  type Materials = { profile: { target_role?: string }; profile_path?: string; resume_path?: string };
+  const [profile, setProfile] = useState<Materials | null>();
   const isBoss = channel === "boss";
   const useSaved = isBoss && scope === "saved";
   const savedRoles = preferences?.target_roles.length ? preferences.target_roles : splitLabels(profile?.profile.target_role ?? "");
-  const targetRoles = useSaved ? savedRoles : splitLabels(roles);
-  const webKind = webEmployment ?? "any";
+  const targetRoles = isBoss ? (useSaved ? savedRoles : splitLabels(roles)) :
+    initialRun?.config.target_roles ?? splitLabels(profile?.profile.target_role ?? "");
   const selectedCompanyCount = table?.rows.filter((row) => row.status === "valid").length ?? 0;
   const invalidCompanyCount = table?.rows.filter((row) => row.status === "invalid").length ?? 0;
   const duplicateCompanyCount = table?.rows.filter((row) => row.status === "duplicate").length ?? 0;
   const companyReady = Boolean(table && tablePath === table.path && selectedCompanyCount);
-  const canPreview = Boolean(profile && targetRoles.length && (isBoss ? !useSaved || preferences : companyReady));
+  const bossMaterials = Boolean(profile?.profile_path && profile.resume_path);
+  const canPreview = isBoss ? Boolean(bossMaterials && targetRoles.length && (!useSaved || preferences)) : profile !== undefined && companyReady;
 
   useEffect(() => {
     let active = true;
-    void request<{ profile: { target_role?: string }; resume_path?: string } | null>("get_profile").then((value) => {
+    void request<Materials | null>("get_profile").then((value) => {
       if (!active) return;
       setProfile(value);
       if (seed.roles === undefined) setRoles(value?.profile.target_role || "");
@@ -107,9 +108,9 @@ export function TaskSetup({
   }, [initialRun, isBoss, fallbackPreferences, seed]);
   useEffect(() => {
     if (!initialRun) rememberDraft(taskDraftKey(channel), {
-      mode, scope, limit, roles: roles || undefined, title, webEmployment, webRequirements, tablePath,
+      mode, scope, limit, roles: roles || undefined, tablePath,
     } satisfies TaskDraft);
-  }, [initialRun, channel, mode, scope, limit, roles, title, webEmployment, webRequirements, tablePath]);
+  }, [initialRun, channel, mode, scope, limit, roles, tablePath]);
 
   const perform = async (action: () => Promise<void>) => {
     setError("");
@@ -133,13 +134,13 @@ export function TaskSetup({
     if (!canPreview) return;
     const config: TaskConfig = {
       channels: [channel],
-      employment_type: isBoss ? useSaved ? preferences?.employment_type ?? "any" : initialRun?.config.employment_type ?? "any" : webKind,
+      employment_type: useSaved ? preferences?.employment_type ?? "any" : initialRun?.config.employment_type ?? "any",
       target_roles: targetRoles,
       max_contacts: limit,
       boss_mode: mode === "screened" ? "screened" : "filtered",
       execution_mode: !isBoss || mode !== "script" ? "ai" : "script",
-      filters: isBoss ? useSaved ? "" : "沿用当前 BOSS 城市和筛选条件" : webRequirements.trim(),
-      window_title: isBoss ? "BOSS直聘" : title,
+      filters: isBoss ? useSaved ? "" : "沿用当前 BOSS 城市和筛选条件" : initialRun?.config.filters ?? "",
+      window_title: isBoss ? "BOSS直聘" : initialRun?.config.window_title ?? "Google Chrome",
       ...(useSaved && preferences ? { boss_filters: preferences.boss_filters } : {}),
       ...(isBoss && !useSaved && initialRun?.config.cities?.length ? { cities: initialRun.config.cities } : {}),
       ...(!isBoss && table ? { company_table: table.path, reviewed_company_table_sha256: table.sha256 } : {}),
@@ -206,14 +207,14 @@ export function TaskSetup({
               </ul>
             </div><button className="task-text-link" onClick={() => setPreview(null)} disabled={busy}>修改</button></div>
             <div className="task-confirm-row"><BriefcaseBusiness size={26}/><div>
-              <h2>本轮岗位</h2><p>{employmentLabels[preview.config.employment_type as EmploymentType]} · {preview.config.target_roles.join("、")}</p>
+              <h2>本轮岗位</h2><p>{preview.config.target_roles.join("、") || "以公司表明确列出的岗位为准"}</p>
               {preview.config.filters && <p>{preview.config.filters}</p>}
             </div></div>
           </>}
         </div>
         <aside className="task-outline task-confirm-checks">
-          <div><Check size={18} className="task-ok"/><strong>资料已就绪</strong></div>
-          <p>{fileName(preview.config.resume_path)}</p>
+          <div>{preview.config.resume_path ? <Check size={18} className="task-ok"/> : <Info size={18}/>}<strong>简历</strong></div>
+          <p>{fileName(preview.config.resume_path) || "未导入，遇到必传附件时交你处理"}</p>
           {isBoss && <div>{browserReady ? <Check size={18} className="task-ok"/> : <Info size={18}/>}
             <strong>{browserReady ? "BOSS 标签已绑定" : "启动前需绑定 BOSS 标签"}</strong></div>}
           <div>{preview.config.execution_mode === "script" || codexReady ? <Check size={18} className="task-ok"/> : <Info size={18}/>}
@@ -261,7 +262,7 @@ export function TaskSetup({
         </aside>
       </div>
       <div className="task-setup-footer">
-        <span>{profile === null ? "请先在设置中保存资料和简历" : profile && !targetRoles.length ? "请先填写岗位方向" : ""}</span>
+        <span>{profile !== undefined && !bossMaterials ? "请先保存个人信息和简历" : profile && !targetRoles.length ? "请先填写岗位方向" : ""}</span>
         <Button disabled={busy || !canPreview} onClick={() => void createPreview()}>预览本轮范围</Button>
       </div>
     </> : <>
@@ -287,7 +288,7 @@ export function TaskSetup({
             </tr>)}
             {!table.rows.length && <tr><td colSpan={3} className="task-table-empty">没有可核对的公司</td></tr>}</tbody>
           </table></div> : <div className="task-company-empty">
-            <p>支持 Excel 和 UTF-8 CSV，包含公司名称和申请网站两列。</p>
+            <p>支持 Excel 和 UTF-8 CSV，包含「公司名称」和「申请网站」或「投递官网」两列。</p>
             <div className="task-filter-row">
               <input aria-label="公司表路径" placeholder="或粘贴本地公司表路径" value={tablePath} onChange={(event) => setTablePath(event.target.value)}/>
               <Button variant="secondary" disabled={busy || !tablePath.trim()} onClick={() => void perform(() => readTable(tablePath.trim()))}>读取公司表</Button>
@@ -296,25 +297,18 @@ export function TaskSetup({
         </div>
         <aside className="task-outline task-company-materials">
           <h2>本轮材料</h2>
-          <ul><li><BriefcaseBusiness size={18}/><span>求职类型</span><strong>{employmentLabels[webKind]}</strong></li>
-            <li><Layers size={18}/><span>岗位方向</span><strong>{targetRoles.join("、") || "待填写"}</strong></li>
-            <li><FileText size={18}/><span>简历</span><strong>{profile ? fileName(profile.resume_path) || "已选" : "未保存"}</strong></li>
+          <ul><li><Layers size={18}/><span>个人信息</span><strong>{profile?.profile_path ? "已保存" : "未保存"}</strong></li>
+            <li><FileText size={18}/><span>简历</span><strong>{fileName(profile?.resume_path) || "未导入"}</strong></li>
           </ul>
-          <details><summary>调整网页填写设置</summary>
-            <label>求职类型<select aria-label="网申求职类型" value={webKind} onChange={(event) => setWebEmployment(event.target.value as EmploymentType)}>
-              {Object.entries(employmentLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
-            </select></label>
-            <label>岗位方向<input value={roles} onChange={(event) => setRoles(event.target.value)}/></label>
-            <label>目标浏览器标题<input value={title} onChange={(event) => setTitle(event.target.value)}/></label>
-            <label>补充要求<input value={webRequirements} onChange={(event) => setWebRequirements(event.target.value)}/></label>
-          </details>
-          <p><Info size={17}/>逐家公司留存填写截图与结果</p>
-          <p><Info size={17}/>网申时需保持浏览器在前台</p>
+          {onMaterials && <div className="task-material-links">
+            <Button variant="secondary" onClick={() => onMaterials("profile")}>编辑个人信息</Button>
+            <Button variant="secondary" onClick={() => onMaterials("resume")}>管理简历</Button>
+          </div>}
+          <p><Info size={17}/>只填写已保存的信息，遇到缺失的必填项时转待办</p>
         </aside>
       </div>
       <div className="task-setup-footer task-company-footer">
-        <span>{table ? <>已读取 {table.rows.length} 行{invalidCompanyCount > 0 && <strong> · {invalidCompanyCount} 行需补全</strong>}{duplicateCompanyCount > 0 && <> · {duplicateCompanyCount} 行重复</>}</> : "导入后核对公司和申请网址"}
-          {profile === null && <> · 请先保存资料和简历</>}</span>
+        <span>{table ? <>已读取 {table.rows.length} 行{invalidCompanyCount > 0 && <strong> · {invalidCompanyCount} 行需补全</strong>}{duplicateCompanyCount > 0 && <> · {duplicateCompanyCount} 行重复</>}</> : "导入后核对公司和申请网址"}</span>
         <Button disabled={busy || !canPreview} onClick={() => void createPreview()}>
           {table ? "预览可用的 " + selectedCompanyCount + " 家" : "预览任务"} <ChevronRight size={17}/>
         </Button>

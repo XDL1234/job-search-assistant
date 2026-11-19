@@ -28,7 +28,7 @@ def web_url(value):
 
 def inspect_company_table(path, columns=None, sheet=None):
     path = Path(path).resolve()
-    aliases = {'company': ['公司名称', '公司', 'company'], 'url': ['申请网站', '网申地址', '招聘网址', 'url'],
+    aliases = {'company': ['公司名称', '公司', 'company'], 'url': ['申请网站', '投递官网', '网申地址', '招聘网址', 'url'],
                'job': ['岗位', '岗位名称', 'job']}
     if path.suffix.lower() not in ('.csv', '.xlsx'):
         raise ValueError('只支持 .xlsx 或 UTF-8 CSV；请先转换旧版 .xls')
@@ -46,6 +46,8 @@ def inspect_company_table(path, columns=None, sheet=None):
             if sheet and sheet not in book.sheetnames:
                 raise ValueError('找不到指定的工作表')
             page = book[sheet] if sheet else book.active
+            # 根据实际行读取，避免整行样式把每条记录扩成 16384 列。
+            page.reset_dimensions()
             rows = list(page.values)
         finally:
             book.close()
@@ -108,7 +110,7 @@ def validate_config(config):
         raise ValueError('求职类型不支持')
     if not config.get('channels') or not set(config['channels']) <= {'web', 'boss'}:
         raise ValueError('channels 必须包含 web 或 boss')
-    if (not isinstance(config.get('target_roles'),list) or not config['target_roles']
+    if (not isinstance(config.get('target_roles'),list) or ('boss' in config['channels'] and not config['target_roles'])
             or any(not isinstance(role,str) or not role.strip() for role in config['target_roles'])):
         raise ValueError('必须明确目标岗位名称及方向')
     if 'boss' in config['channels']:

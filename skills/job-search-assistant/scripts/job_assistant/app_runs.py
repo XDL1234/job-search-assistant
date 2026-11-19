@@ -5,7 +5,7 @@ import time
 import uuid
 
 from .bootstrap import SKILL_ROOT
-from .cli import prepare_config, verify_materials
+from .cli import prepare_config, read_profile, verify_materials
 from .migrations import migrate_app
 from .panel_state import cancel_pending_actions, queue_control
 from .store import packed
@@ -46,16 +46,18 @@ def preview_run(store, value, run_id=None):
         raise ValueError('任务配置必须为对象')
     from .profiles import get_profile
     from .inputs import digest_file
-    profile = get_profile(store)
-    if not profile:
-        raise ValueError('请先导入并保存简历和个人资料')
-    if digest_file(profile['resume_path']) != profile['resume_sha256']:
-        raise ValueError('简历附件已变化，请重新核对保存资料')
     allowed = {'channels', 'target_roles', 'employment_type', 'boss_mode', 'boss_filters', 'execution_mode', 'max_contacts',
                'filters', 'cities', 'keywords', 'exclude_keywords', 'company_table', 'companies', 'columns', 'sheet',
                'reviewed_company_table_sha256',
                'unknown_reply_mode', 'rules', 'window_title', 'poll_seconds'}
     config = {key: val for key, val in value.items() if key in allowed}
+    profile = get_profile(store) or {}
+    profile_path = profile.get('profile_path', '')
+    resume_path = profile.get('resume_path', '')
+    if config.get('channels') != ['web'] and (not profile_path or not resume_path):
+        raise ValueError('请先保存个人信息和简历')
+    if resume_path and (not Path(resume_path).is_file() or digest_file(resume_path) != profile['resume_sha256']):
+        raise ValueError('简历原件已变化或丢失，请在简历页重新导入')
     from .job_preferences import JOB_TYPES
     employment = config.get('employment_type')
     if not isinstance(employment, str) or employment not in JOB_TYPES:
@@ -68,8 +70,8 @@ def preview_run(store, value, run_id=None):
         raise ValueError('脚本模式沿用平台当前筛选；自然语言补充条件请改用 AI 模式或先在 BOSS 设置')
     if not isinstance(config.get('window_title'),str) or not config['window_title'].strip():
         raise ValueError('请填写目标浏览器窗口标题')
-    config.update({'profile_path': profile['profile_path'], 'resume_path': profile['resume_path'],
-                   'profile_version': profile['version_id'], 'simulation': False})
+    config.update({'profile_path': profile_path, 'resume_path': resume_path,
+                   'profile_version': profile.get('version_id', ''), 'simulation': False})
     from .reply_settings import read_settings
     settings = read_settings(store)
     config['rules'] = settings['rules']
@@ -220,8 +222,19 @@ def execution_context(store, run_id):
     config = verify_materials(store, run_id)
     from .boss_messages import read_watch_state
     from .app_decisions import current_generation
+    profile = read_profile(config)
+    private_fields = []
+    if config.get('simulation') is not True:
+        identifier = profile.pop('id_number', '')
+        if isinstance(profile.get('sources'), dict):
+            profile['sources'].pop('id_number', None)
+        if config['channels'] == ['web']:
+            profile.pop('resume_text', None)
+            profile.pop('sources', None)
+            if identifier:
+                private_fields.append('profile.id_number')
     return {'session': session, 'run': {'id': run_id, 'status': store.one('runs', run_id)['status']},
             'control_generation': current_generation(store, run_id),
             'pending_messages': read_watch_state(store, run_id).get('pending_ai'),
-            'config': config, 'profile': json.loads(Path(config['profile_path']).read_text(encoding='utf-8')),
+            'config': config, 'profile': profile, 'private_profile_fields': private_fields,
             'skill_path': str(SKILL_ROOT / 'SKILL.md')}

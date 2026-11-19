@@ -1,14 +1,17 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ArrowRight, Bot, Cable, ChevronDown, CircleCheck, ContactRound, FileText, MessagesSquare, Monitor, Play } from "lucide-react";
 import { Button } from "../components/ui/button";
 import type { BrowserState, Connection } from "../contracts";
-import { Profile } from "./Profile";
+import { hasResumeFields, Profile } from "./Profile";
 import { Replies } from "./Replies";
+import { Resume } from "./Resume";
+import type { Extraction } from "./profile-draft";
 import "./WorkspaceSettings.css";
 
-export type SettingsTab = "profile" | "replies" | "connections";
+export type SettingsTab = "resume" | "profile" | "replies" | "connections";
 const tabs = [
-  { key: "profile", label: "资料与简历", icon: ContactRound },
+  { key: "resume", label: "简历", icon: FileText },
+  { key: "profile", label: "个人信息", icon: ContactRound },
   { key: "replies", label: "回复规则", icon: MessagesSquare },
   { key: "connections", label: "连接与诊断", icon: Cable },
 ] as const;
@@ -28,6 +31,7 @@ export function SettingsPage({ active, onTabChange, onSaved, diagnostics }: {
   onSaved: () => void | Promise<void>;
   diagnostics: ReactNode;
 }) {
+  const [resumeExtraction, setResumeExtraction] = useState<Extraction>();
   return (
     <section className="settings-page">
       <nav className="workspace-tabs" aria-label="设置分类">
@@ -35,7 +39,15 @@ export function SettingsPage({ active, onTabChange, onSaved, diagnostics }: {
           <button key={key} type="button" aria-pressed={active === key}
             onClick={() => onTabChange(key)}><Icon size={17} aria-hidden="true" />{label}</button>)}
       </nav>
-      {active === "profile" && <Profile onSaved={onSaved} />}
+      {active === "resume" && <Resume onSaved={onSaved} onExtracted={(result) => {
+        if (!hasResumeFields(result)) return false;
+        setResumeExtraction(result);
+        onTabChange("profile");
+        return true;
+      }} />}
+      <div hidden={active !== "profile"}>
+        <Profile onSaved={onSaved} resumeExtraction={resumeExtraction} />
+      </div>
       {active === "replies" && <Replies />}
       {active === "connections" && diagnostics}
     </section>

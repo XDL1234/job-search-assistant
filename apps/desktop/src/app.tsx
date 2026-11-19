@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -37,7 +37,7 @@ export default function App() {
   });
   const [browser, setBrowser] = useState<BrowserState>({ connected: false });
   const [diagnostic, setDiagnostic] = useState<BrowserDiagnostic>();
-  const [profileReady, setProfileReady] = useState<boolean>();
+  const [resumeReady, setResumeReady] = useState<boolean>();
   const [runId, setRunId] = useState("");
   const [editingRun, setEditingRun] = useState<Run>();
   const [runProblem, setRunProblem] = useState<{ id: string; text: string }>();
@@ -49,6 +49,7 @@ export default function App() {
   const [image, setImage] = useState("");
   const [savedFrame, setSavedFrame] = useState<{ id: string; url: string }>();
   const [messages, setMessages] = useState<ExecutionLine[]>([]);
+  const scroller = useRef<HTMLDivElement>(null);
   const desktop = isTauri();
   const run = snapshot.runs.find((value) => value.id === runId);
   const frameId = page === "running" && snapshot.frame?.run_id === runId ? snapshot.frame?.id : undefined;
@@ -62,14 +63,14 @@ export default function App() {
       setError(String(failure));
     }
   }, [runId]);
-  const loadProfile = useCallback(() => {
+  const loadResume = useCallback(() => {
     if (!isTauri()) return;
-    void request("get_profile").then((profile) => setProfileReady(Boolean(profile))).catch(() => setProfileReady(undefined));
+    void request("get_resume").then((resume) => setResumeReady(Boolean(resume))).catch(() => setResumeReady(undefined));
   }, []);
-  useEffect(loadProfile, [loadProfile]);
+  useEffect(loadResume, [loadResume]);
   useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [page]);
+    scroller.current?.scrollTo(0, 0);
+  }, [page, runId, settingsTab]);
   useEffect(() => {
     void refresh();
     if (!isTauri()) return;
@@ -195,18 +196,18 @@ export default function App() {
           </div>}
         </div>
       </div>
-      <div className="workspace-content">
+      <div className="workspace-scroll" ref={scroller}><div className="workspace-content">
         {!desktop && <div className="banner">浏览器界面预览，执行器未连接。请从桌面应用启动任务。</div>}
         {error && <div className="banner error" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError("")}><X size={16} /></button></div>}
         {notice && <div className="banner" role="status">{notice}</div>}
-        {page === "home" && <Overview snapshot={snapshot} profileReady={profileReady} classify={attentionCategory}
+        {page === "home" && <Overview snapshot={snapshot} resumeReady={resumeReady} classify={attentionCategory}
           onNew={openTask} onRun={openRun} onTodo={(category) => { setTodoCategory(category); navigate("inbox"); }}
-          onRecords={() => navigate("history")} onProfile={() => openSettings("profile")} />}
+          onRecords={() => navigate("history")} onResume={() => openSettings("resume")} />}
         {page === "tasks" && <TasksPage snapshot={snapshot} onNew={openTask} onOpen={openRun} />}
         {(page === "boss" || page === "companies") && <TaskSetup key={`${page}:${editingRun?.id ?? "new"}`} channel={page === "boss" ? "boss" : "web"}
           initialRun={editingRun} latestRun={snapshot.runs.find((item) => !item.config.simulation && item.config.channels.includes(page === "boss" ? "boss" : "web"))}
           onSwitchChannel={openTask} onBack={() => editingRun ? openRun(editingRun.id) : navigate("tasks")}
-          browserReady={browserReady} codexReady={connection.state === "ready"}
+          browserReady={browserReady} codexReady={connection.state === "ready"} onMaterials={openSettings}
           onCreated={(id) => { setRunProblem(undefined); openRun(id); void refresh(); }} />}
         {page === "running" && <Workbench key={runId} run={run} snapshot={snapshot} messages={messages} busy={busy}
           starting={Boolean(run && startingRun === run.id && !isActiveRun(run))}
@@ -222,7 +223,7 @@ export default function App() {
           onImage={(kind, identity) => void perform(async () => { setImage((await request<{ url: string }>("read_image", { kind, identity })).url); })} />}
         {page === "history" && <Records snapshot={snapshot} onExport={exportRecords} exporting={busy} />}
         {page === "inbox" && <Inbox key={todoCategory ?? "all"} snapshot={snapshot} onChanged={refresh} initialCategory={todoCategory} />}
-        {page === "settings" && <><header className="workspace-title"><h1>设置</h1></header><SettingsPage active={settingsTab} onTabChange={setSettingsTab} onSaved={async () => { loadProfile(); await refresh(); }}
+        {page === "settings" && <><header className="workspace-title"><h1>设置</h1></header><SettingsPage active={settingsTab} onTabChange={setSettingsTab} onSaved={async () => { loadResume(); await refresh(); }}
           diagnostics={<ConnectionDiagnostics browser={browser} connection={connection} busy={busy} browserInUse={browserInUse} desktop={desktop}
             diagnostic={diagnostic}
             onConnectChrome={() => void perform(async () => { setDiagnostic(undefined); setBrowser(await native<BrowserState>("browser_connect")); })}
@@ -231,7 +232,7 @@ export default function App() {
             onConnectCodex={() => void perform(async () => setConnection(await native<Connection>("codex_connect")))}
             onLogin={() => void perform(async () => setConnection(await native<Connection>("codex_login")))}
             onDemo={() => void demo()} />} /></>}
-      </div>
+      </div></div>
     </main>
       {preview && (
         <div className="modal-backdrop">

@@ -1,4 +1,4 @@
-# Windows 测试版构建与发布
+# Windows 安装包构建与发布
 
 构建入口：`python -X utf8 "tools/build_desktop.py"`。需要既有桌面开发环境和官方 Codex CLI 0.156.1 Windows x64 平台包，启动器可发现 npm 安装的官方包，或通过 `JOB_ASSISTANT_CODEX` 指向其中 `bin/codex.exe`。
 
@@ -15,11 +15,15 @@ python -X utf8 "tools/build_desktop.py" --reuse-resources
 
 复用资源前应确认 Python/Skill/内置执行器没有变更；变更后重新执行完整构建。资源清单记录路径、大小和 SHA256，拒绝明显的账户文件、个人资料和运行台账。许可证随包提供，清单不包含构建者用户目录。
 
-产物在 `dist/desktop`：安装器、`SHA256SUMS.txt` 和 `resource-manifest.json`。不把这些大型二进制提交到 Git，上传为 GitHub Release 附件。使用明确版本标签，Release 勾选 **pre-release**，标题含“测试版”，说明采用 `docs/releases/<tag>.md`。
+产物位于 `dist/desktop`。上传 Windows x64 MSI、当前用户 EXE、`SHA256SUMS.txt` 和 `resource-manifest.json` 为 GitHub Release 附件，Git 提交只包含源码和文档。正式版使用普通 Release，说明采用 `docs/releases/<tag>.md`。测试版用预发布标签。
 
-预发布前至少检查：实际安装至指定目录、快捷方式指向正确 exe、脱离源码和开发环境的启动、读取台账、正常退出、包内不含用户数据。真实平台测试按用户授权范围单独安排，测试版发布不能隐含承诺真实投递已可用。
+发布前检查选目录、快捷方式、脱离源码启动、读取台账、正常退出及安装包校验。用 Windows Installer 检查 MSI 数据库和提取运行，并用当前用户 EXE 验证完整安装流程。真实平台测试按用户授权单独安排，Release 说明记录实站验收范围。
 
-本机安装启动检查脚本：`python -X utf8 "tests/desktop_install_smoke.py" --shortcut "桌面快捷方式的完整路径"`。脚本临时移除开发环境变量，通过快捷方式启动实际安装版，验证首页与导出后关闭，不创建投递任务。`--connect` 仅在发布后用于检查真实 Codex 连接；不触发模型推理和消息发送。
+MSI 使用 Tauri 下载到构建目录的 WiX，并用 Windows 默认临时目录运行 Installer 校验。项目专用临时目录用于 Python 打包。
+
+本机 MSI 检查使用 `python -X utf8 "tests/desktop_msi_smoke.py" --msi "安装包路径"`。可以用 `--wix-dark "dark.exe 的路径"` 直接提取包内文件，再核对资源哈希和启动。
+
+EXE 安装后，运行 `python -X utf8 "tests/desktop_install_smoke.py" --shortcut "桌面快捷方式的完整路径"`。脚本通过实际快捷方式验证首页和导出。`--connect` 用于检查 Codex 连接。
 
 新浏览器底座随包提供固定的 agent-browser 原生可执行文件、许可证、补丁说明和运行时清单，取消 `browser-extension` 分发。先运行 `tools/build_agent_browser.py` 构建固定来源，再准备桌面资源；`--reuse-resources` 会核验 Skill 源指纹、worker 哈希、原生运行时能力及全量资源清单，不会复用已过期工作进程。清理路径必须解析在本项目资源目录内部；构建只打包白名单，不读取浏览器登录目录或 `.codex` 凭据。
 

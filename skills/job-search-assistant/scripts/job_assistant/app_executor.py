@@ -4,11 +4,76 @@ import json
 from pathlib import Path
 
 from .app_runs import app_session
-from .cli import dispatch, verify_materials
+from .cli import dispatch, read_profile, verify_materials
 from .panel_state import check_fresh_frame
 
 ALLOWED = {'status', 'bind', 'capture', 'act', 'begin', 'field', 'evidence', 'prepare', 'finish',
            'attempt_status', 'route_message', 'handoff', 'select_job', 'tick', 'verify_materials', 'browser', 'boss_decide'}
+
+
+def _web_field_value(config, source):
+    if source == 'resume' and config.get('resume_path'):
+        return config['resume_path']
+    if not isinstance(source, str) or len(source) > 160 or not source.startswith('profile.'):
+        raise ValueError('请指定有值的个人信息字段或本轮已确认的简历')
+    parts = source.split('.')[1:]
+    if parts[0] in ('sources', 'resume_text'):
+        raise ValueError('请使用已保存的具体个人信息字段')
+    value = read_profile(config)
+    for part in parts:
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isascii() and part.isdecimal() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            value = None
+            break
+    if isinstance(value, str) and value.strip():
+        return value
+    if type(value) in (bool, int, float):
+        return json.dumps(value, allow_nan=False)
+    raise ValueError('该个人信息尚未填写，已阻止输入')
+
+
+def _check_web_request(config, request, attempt, action):
+    op, purpose = request['operation'], request.get('purpose')
+    if attempt and attempt['status'] == 'needs_user' and (
+            op in ('field', 'prepare', 'finish') or op == 'act' and purpose in ('fill', 'commit')):
+        raise ValueError('这份申请需要人工处理，已阻止继续填写或提交')
+    if op == 'attempt_status' and attempt and attempt['status'] == 'needs_user' and request.get('status') != 'needs_user':
+        raise ValueError('自动化不能恢复人工处理的申请')
+    if op == 'attempt_status' and request.get('status') == 'needs_user' and not isinstance(request.get('reason', ''), str):
+        raise ValueError('请说明需要人工处理的原因')
+    if op == 'finish' and request.get('status') == 'succeeded' and (
+            not action or action['status'] not in ('executing', 'uncertain')):
+        raise ValueError('必须实际执行本次提交后才能核验成功')
+    if op == 'field':
+        value = _web_field_value(config, request.get('source'))
+        if 'value' in request and request['value'] != value:
+            raise ValueError('登记值必须与本轮个人信息一致')
+        request['value'] = '已填证件号码' if request['source'] == 'profile.id_number' else value
+        return
+    if op != 'act':
+        return
+    operation = request['input']
+    if not isinstance(operation, dict):
+        raise ValueError('填写操作无效')
+    if purpose == 'fill':
+        if not attempt:
+            raise ValueError('填写官网表单前请登记本轮申请')
+        value = _web_field_value(config, request.get('field_source'))
+        if operation.get('op') == 'type':
+            if 'text' in operation and operation['text'] != value:
+                raise ValueError('输入值必须与本轮个人信息一致')
+            request['input'] = {**operation, 'text': value}
+    elif purpose == 'navigate' and operation.get('op') == 'type':
+        entries = (row.get(key) for row in config.get('company_rows', []) for key in ('url', 'job'))
+        text = operation.get('text')
+        if not isinstance(text, str) or not text.strip() or (
+                text not in config.get('target_roles', []) and text not in entries):
+            raise ValueError('导航文字只能是本轮授权的网址或岗位搜索词')
+    elif purpose == 'commit' and (not action or action['kind'] != 'submit' or operation.get('op') not in ('click', 'key')):
+        raise ValueError('官网提交只接受已确认的点击或按键')
 
 
 def executor_action(store, run_id, request):
@@ -25,9 +90,19 @@ def executor_action(store, run_id, request):
     req = {**request, 'run_id': run_id}
     if req.get('attempt_id') and not store.owns_attempt(run_id, req['attempt_id']):
         raise ValueError('申请记录不属于当前轮次')
-    if req.get('action_id') and store.one('actions', req['action_id'])['run_id'] != run_id:
+    action = store.one('actions', req['action_id']) if req.get('action_id') else None
+    if action and action['run_id'] != run_id:
         raise ValueError('动作不属于当前轮次')
     op = req['operation']
+    web = config.get('simulation') is not True and 'web' in config.get('channels', [])
+    web_attempt = None
+    if web and op in ('act', 'field', 'prepare', 'finish', 'attempt_status'):
+        action_attempt = op == 'finish' or op == 'act' and req.get('purpose') == 'commit'
+        attempt_id = action['attempt_id'] if action and action_attempt else req.get('attempt_id')
+        attempt = store.one('attempts', attempt_id) if attempt_id else None
+        if attempt is None or attempt['channel'] == 'web':
+            web_attempt = attempt
+            _check_web_request(config, req, attempt, action)
     if op == 'status':
         from .app_decisions import compact_status
         return {'success':True,'contentItems':[{'type':'inputText','text':json.dumps(compact_status(store,run_id),ensure_ascii=False)}]}
@@ -81,6 +156,9 @@ def executor_action(store, run_id, request):
             raise ValueError('截图不属于当前轮次，请重新观察')
         check_fresh_frame(store, run_id, path)
     result = dispatch(store, req)
+    if web_attempt and op == 'attempt_status' and req['status'] == 'needs_user':
+        reason = (req.get('reason') or '请核对缺少的必填信息或网页操作').strip()
+        result['attention'] = store.attention(web_attempt['id'], '公司网申需要处理：' + reason)
     if op in ('capture', 'act'):
         result['run_id'] = run_id
         Path(result['path']).with_suffix('.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')

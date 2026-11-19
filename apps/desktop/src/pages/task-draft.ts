@@ -7,9 +7,6 @@ export type TaskDraft = {
   scope: "saved" | "current";
   limit: number;
   roles?: string;
-  title: string;
-  webEmployment?: EmploymentType;
-  webRequirements: string;
   tablePath: string;
 };
 
@@ -30,9 +27,6 @@ export function taskDraftFromRun(run?: Run): TaskDraft {
     scope: value && !value.boss_filters && value.cities?.length !== 1 ? "current" : "saved",
     limit: value?.max_contacts ?? 3,
     roles: value?.target_roles.join("、"),
-    title: value?.window_title ?? "Google Chrome",
-    webEmployment: value?.employment_type as EmploymentType | undefined,
-    webRequirements: value?.filters ?? "",
     tablePath: value?.company_table ?? "",
   };
 }

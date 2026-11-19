@@ -10,15 +10,15 @@ const categories = [
 ] as const;
 export type OverviewCategory = typeof categories[number]["id"];
 
-export function Overview({ snapshot, profileReady, classify, onNew, onRun, onTodo, onRecords, onProfile }: {
+export function Overview({ snapshot, resumeReady, classify, onNew, onRun, onTodo, onRecords, onResume }: {
   snapshot: Snapshot;
-  profileReady?: boolean;
+  resumeReady?: boolean;
   classify: (reason: string) => OverviewCategory;
   onNew: () => void;
   onRun: (id: string) => void;
   onTodo: (category: OverviewCategory) => void;
   onRecords: () => void;
-  onProfile: () => void;
+  onResume: () => void;
 }) {
   const now = new Date();
   const realRuns = snapshot.runs.filter((run) => !run.config.simulation);
@@ -83,9 +83,8 @@ export function Overview({ snapshot, profileReady, classify, onNew, onRun, onTod
           </button>)}
         </section>
         <section className="card overview-profile">
-          <h2><CheckCircle2 className={profileReady ? "ready" : ""} size={21} />{profileReady === undefined ? "资料与简历" : profileReady ? "资料已就绪" : "资料待完善"}</h2>
-          <p>{profileReady ? "已保存求职资料与简历，可以预览投递任务。" : "在设置中导入并核对求职资料。"}</p>
-          <button className="text-button" onClick={onProfile}>管理简历 <ArrowUpRight size={16} /></button>
+          <h2><CheckCircle2 className={resumeReady ? "ready" : ""} size={21} />{resumeReady === undefined ? "简历" : resumeReady ? "已导入简历" : "待导入简历"}</h2>
+          <button className="text-button" onClick={onResume}>管理简历 <ArrowUpRight size={16} /></button>
         </section>
       </div>
     </div>

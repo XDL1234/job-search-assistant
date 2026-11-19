@@ -1,8 +1,12 @@
 # 求职自动化助手
 
-Windows 求职辅助项目，提供桌面应用测试版及 Codex Skill / 插件源码包。简历与个人资料由用户提供；按轮次授权后操作，面试邀约始终转人工。
+Windows 求职辅助项目，提供桌面应用及 Codex Skill / 插件源码。简历与个人资料由用户提供。每轮操作须经用户授权，面试邀约始终转人工。
 
-**下载桌面测试版** [v0.3.0-beta.12 Windows x64 安装包](https://github.com/XDL1234/job-search-assistant/releases/tag/v0.3.0-beta.12)。在 Assets 中下载安装程序，可选择安装目录并使用桌面快捷方式。普通用户无需安装 Python、Node 或 Rust。详见[界面变化与安装说明](docs/releases/v0.3.0-beta.12.md)。
+**下载 Windows x64**
+
+[MSI 安装包](https://github.com/XDL1234/job-search-assistant/releases/download/v1.0.0/job-search-assistant-1.0.0-windows-x64.msi) · [当前用户 EXE 安装包](https://github.com/XDL1234/job-search-assistant/releases/download/v1.0.0/job-search-assistant-1.0.0-windows-x64-setup.exe) · [发布页](https://github.com/XDL1234/job-search-assistant/releases/tag/v1.0.0)
+
+常规安装双击 MSI，按提示授权并选择目录。没有管理员权限时使用 EXE。安装后可从桌面或开始菜单打开，无需预装 Python、Node 或 Rust。旧测试版迁移、安装要求和校验方法见[安装说明](docs/releases/v1.0.0.md)。
 
 ## 项目状态与文档
 
@@ -15,7 +19,7 @@ Windows 桌面应用提供投递任务、执行工作台、待办、投递记录
 - [后台浏览器连接与开发进度](docs/background-browser.md)
 - [变更记录](https://github.com/XDL1234/job-search-assistant/blob/main/CHANGELOG.md)
 
-桌面应用采用 Tauri 2、React、TypeScript，并复用 Python 与 SQLite。BOSS 通过内置原生浏览器组件连接现有 Chrome，工作台提供本地 JPEG 预览，官网网申继续使用桌面操作。最新测试版已通过隔离 Chrome 与安装版回归，真实附件、招聘方问答和官网网申仍待实站验收。连接方式见[后台浏览器说明](docs/background-browser.md)。
+桌面应用采用 Tauri 2、React、TypeScript，并复用 Python 与 SQLite。BOSS 通过内置浏览器组件连接现有 Chrome，工作台提供本地 JPEG 预览。公司网申支持导入清单和保存资料，扫描简历可用内置离线 OCR 回填。BOSS 附件发送、招聘方问答和公司官网实际提交仍待实站验收。连接方式见[后台浏览器说明](docs/background-browser.md)。
 
 ## 单独安装 Skill（开发者与既有用户）
 
@@ -65,7 +69,7 @@ python -X utf8 "./skills/job-search-assistant/scripts/run.py" bootstrap --instal
 - 电脑操作由当前 Codex 模型观察截图后调用本地脚本；不是无需模型的固定坐标机器人，也没有独立后台模型服务。
 - 仅会话持续运行时值守。电脑锁屏、窗口切换或会话结束会停止/暂停操作。真实网站布局、账号权限和平台限制需要实际接入核实。
 
-个人记录默认在用户主目录下 `.job-search-assistant`，不会进入分发包。该位置避开 Windows MSIX 对 AppData 的重定向。截图文件保存在本地；Codex 分析时会将所需资料或截图发送到模型服务，本地存储不代表离线推理。不要把运行目录分享给其他用户。
+桌面版资料、投递记录和截图默认保存在 `%USERPROFILE%\.job-search-assistant\desktop`，与安装目录分开。简历 OCR 在本机离线运行。使用 Codex 分析时，所需资料或截图会发送到模型服务。
 
 ## 开发验证
 

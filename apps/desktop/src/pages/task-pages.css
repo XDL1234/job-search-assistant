@@ -139,8 +139,7 @@
 .task-company-materials li { border-bottom: 1px solid var(--task-line); min-width: 0; padding: 8px 0; }
 .task-company-materials li > span, .task-company-materials svg { flex: 0 0 auto; }
 .task-company-materials li strong { margin-left: auto; text-align: right; overflow-wrap: anywhere; }
-.task-company-materials details { padding-block: 4px; font-size: 13px; color: var(--task-muted); }
-.task-company-materials details input, .task-company-materials details select { display: block; width: 100%; border: 1px solid var(--task-line); border-radius: 7px; padding: 7px; margin: 3px 0 8px; color: #182034; }
+.task-material-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 5px; }
 .task-company-materials p { font-size: 12px; }
 .task-company-footer strong { color: #925612; }
 .task-company-empty { padding: 3px 0; }

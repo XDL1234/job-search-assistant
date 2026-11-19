@@ -134,6 +134,86 @@ class AppExecutionTests(unittest.TestCase):
         path.with_suffix('.json').write_text(json.dumps({'run_id': run, 'captured_at': time.time()}))
         self.assertTrue(self.call('executor_action', run_id=run, request=request)['ok'])
 
+    def web_application(self, materials):
+        from job_assistant.cli import prepare_config
+        from job_assistant.migrations import migrate_app
+        table = self.root / 'companies.csv'
+        url = 'https://example.invalid/careers'
+        table.write_text(f'公司,申请网站,岗位\n测试公司,{url},测试岗位\n', encoding='utf-8')
+        config = prepare_config({'channels': ['web'], 'target_roles': [], 'employment_type': 'any',
+                                 'company_table': str(table), 'window_title': '测试招聘页', **materials})
+        run = self.db.create_run(config, '确认测试')
+        migrate_app(self.db)
+        with self.db.conn:
+            self.db.conn.execute('INSERT INTO app_sessions (run_id) VALUES (?)', (run,))
+        attempt = self.db.begin_attempt(run, '测试公司', url, '测试岗位', 'web', 'web-test-job')
+        return config, run, attempt
+
+    def test_web_materials_and_role_are_optional_without_affecting_boss(self):
+        from job_assistant.cli import prepare_config, read_profile, verify_materials
+        config, run, _ = self.web_application({})
+        self.assertEqual(config, prepare_config(config))
+        self.assertEqual(config, verify_materials(self.db, run))
+        self.assertEqual({}, read_profile(config))
+        self.assertEqual(('', '', '', ''), tuple(config[field] for field in
+                         ('resume_path', 'resume_sha256', 'profile_path', 'profile_sha256')))
+        with self.assertRaisesRegex(ValueError, '目标岗位'):
+            prepare_config({**config, 'channels': ['boss']})
+        with self.assertRaisesRegex(ValueError, '缺少 resume'):
+            prepare_config({**config, 'channels': ['boss'], 'target_roles': ['测试岗位'],
+                            'boss_mode': 'filtered', 'max_contacts': 1})
+
+    def test_web_form_only_inputs_confirmed_values_and_holds_incomplete_application(self):
+        from PIL import Image
+        personal = self.root / 'profile.json'
+        personal.write_text(json.dumps({'contact': {'email': '  '}, 'education': [{'school': '测试大学'}],
+                                        'id_number': '000000000000000000'}), encoding='utf-8')
+        _, run, attempt = self.web_application({'profile_path': str(personal)})
+        path = self.root / 'frames' / ('b' * 32 + '.png')
+        path.parent.mkdir()
+        Image.new('RGB', (20, 20), 'white').save(path)
+        meta = {'run_id': run, 'captured_at': time.time(), 'path': str(path)}
+        path.with_suffix('.json').write_text(json.dumps(meta))
+
+        def tool(**request):
+            return self.call('executor_action', run_id=run, request={'attempt_id': attempt, **request})
+
+        def fill(source, **extra):
+            return tool(operation='act', purpose='fill', frame=str(path), field_source=source,
+                        input={'op': 'type', **extra})
+
+        with patch('job_assistant.desktop.foreground', return_value={'window': {'title': '测试招聘页'}}), \
+             patch('job_assistant.desktop.Desktop.act', return_value=dict(meta)) as desktop:
+            for source in ('profile.contact.email', 'profile.contact.phone', 'profile.education.1.school',
+                           'profile.education', 'profile.resume_text', 'resume'):
+                self.assertFalse(fill(source)['ok'], source)
+            self.assertFalse(fill('profile.education.0.school', text='其他学校')['ok'])
+            self.assertFalse(tool(operation='act', purpose='navigate', frame=str(path),
+                                  input={'op': 'type', 'text': '伪造号码'})['ok'])
+            desktop.assert_not_called()
+            self.assertTrue(fill('profile.education.0.school')['ok'])
+            self.assertEqual('测试大学', desktop.call_args.args[1]['text'])
+            self.assertTrue(tool(operation='act', purpose='navigate', frame=str(path),
+                                 input={'op': 'type', 'text': '测试岗位'})['ok'])
+
+        self.assertFalse(tool(operation='field', name='邮箱', source='profile.contact.email')['ok'])
+        self.assertTrue(tool(operation='field', name='证件号', source='profile.id_number')['ok'])
+        row = self.db.conn.execute('SELECT value FROM fields WHERE attempt_id=?', (attempt,)).fetchone()
+        self.assertEqual('已填证件号码', row['value'])
+        evidence = self.db.evidence(attempt, path, 'pre_submit', ['证件号'])
+        action = self.db.prepare_action(run, attempt, 'submit', '测试公司', {'pre_submit_evidence': evidence})
+        result = tool(operation='attempt_status', status='needs_user', reason='缺少必填邮箱')
+        self.assertTrue(result['ok'], result)
+        self.assertFalse(fill('profile.education.0.school')['ok'])
+        self.assertFalse(tool(operation='attempt_status', status='in_progress')['ok'])
+        self.assertFalse(tool(operation='act', purpose='commit', action_id=action, frame=str(path),
+                              input={'op': 'click', 'x': 2, 'y': 2})['ok'])
+        checked = self.db.evidence(attempt, path, 'verification')
+        self.assertFalse(tool(operation='finish', action_id=action, status='not_done', evidence_id=checked,
+                              reason='未提交')['ok'])
+        self.assertEqual('pending', self.db.one('actions', action)['status'])
+        self.assertIn('缺少必填邮箱', self.db.conn.execute('SELECT reason FROM attention WHERE subject=?', (attempt,)).fetchone()[0])
+
 
 if __name__ == '__main__':
     unittest.main()

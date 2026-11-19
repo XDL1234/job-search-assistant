@@ -52,6 +52,38 @@ class ConfigurationTests(unittest.TestCase):
         table.write_text('公司名称,申请网站\n其他公司,https://example.org\n',encoding='utf-8')
         self.assertFalse(self.call('start_run',ticket=result['result']['ticket'],confirmed=True)['ok'])
 
+    def test_web_only_can_start_without_materials_or_explicit_role(self):
+        fresh = Store(self.root / 'without-materials')
+        self.addCleanup(fresh.close)
+        self.db = fresh
+        table = self.root / 'companies.csv'
+        table.write_text('公司名称,申请网站\n合成公司,https://example.invalid/apply\n', encoding='utf-8')
+        result = self.call('preview_run', config=self.config(channels=['web'], company_table=str(table),
+                           execution_mode='ai', target_roles=[]))
+        self.assertTrue(result['ok'], result)
+        created = self.call('start_run', ticket=result['result']['ticket'], confirmed=True)
+        self.assertTrue(created['ok'], created)
+        context = self.call('execution_context', run_id=created['result']['run_id'])['result']
+        self.assertEqual(context['profile'], {})
+        self.assertEqual(context['config']['resume_path'], '')
+        self.assertEqual(context['config']['target_roles'], [])
+        self.assertFalse(self.call('preview_run', config=self.config())['ok'])
+
+    def test_web_context_keeps_identifier_in_local_profile(self):
+        identifier = '00000020000101000X'
+        self.assertTrue(self.call('save_personal_info', profile={'id_number': identifier, 'name': '合成姓名',
+                                                                'resume_text': '仅供本机预览'})['ok'])
+        table = self.root / 'companies.csv'
+        table.write_text('公司名称,申请网站\n合成公司,https://example.invalid/apply\n', encoding='utf-8')
+        config = self.config(channels=['web'], company_table=str(table), execution_mode='ai')
+        preview = self.call('preview_run', config=config)['result']
+        run = self.call('start_run', ticket=preview['ticket'], confirmed=True)['result']['run_id']
+        context = self.call('execution_context', run_id=run)['result']
+        self.assertEqual(context['profile'], {'name': '合成姓名'})
+        self.assertEqual(context['private_profile_fields'], ['profile.id_number'])
+        self.assertNotIn(identifier, json.dumps(context))
+        self.assertEqual(self.call('get_profile')['result']['profile']['id_number'], identifier)
+
     def test_company_review_allows_only_valid_rows_from_the_same_file(self):
         table = self.root / 'review.csv'
         text = ('公司名称,申请网站\n甲,https://example.org/apply\n乙,\n'
@@ -73,6 +105,31 @@ class ConfigurationTests(unittest.TestCase):
         table.write_text(text + '丁,https://example.net/apply\n', encoding='utf-8')
         self.assertFalse(self.call('preview_run', config=config)['ok'])
         self.assertFalse(self.call('start_run', ticket=preview['ticket'], confirmed=True)['ok'])
+
+    def test_company_workbook_accepts_delivery_website_header_and_keeps_excel_row_numbers(self):
+        from openpyxl import Workbook
+
+        table = self.root / '校招公司名单.xlsx'
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(['公司名称', '投递官网'])
+        sheet.append(['合成公司', 'https://example.org/careers'])
+        sheet['A5'] = '邮件投递公司'
+        sheet['B5'] = 'career@example.org'
+        sheet['XFD5'].number_format = '0.00'
+        workbook.save(table)
+        workbook.close()
+
+        response = self.call('inspect_company_table', path=str(table))
+        self.assertTrue(response['ok'], response)
+        inspection = response['result']
+        self.assertEqual([(r['source_row'], r['status']) for r in inspection['rows']], [(2, 'valid'), (5, 'invalid')])
+        config = self.config(channels=['web'], company_table=str(table), execution_mode='ai',
+                             reviewed_company_table_sha256=inspection['sha256'])
+        preview = self.call('preview_run', config=config)['result']
+        self.assertEqual(preview['config']['company_rows'], [
+            {'company': '合成公司', 'url': 'https://example.org/careers', 'source_row': 2},
+        ])
 
     def test_saved_filters_remain_independent_and_are_frozen_in_preview(self):
         self.assertIsNone(self.call('get_job_preferences')['result'])
