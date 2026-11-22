@@ -3,12 +3,23 @@ import csv
 import hashlib
 import io
 import json
-from pathlib import Path
+from pathlib import Path, WindowsPath
 from urllib.parse import urlsplit
 
 
 def digest_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def path_key(path):
+    """对比 Windows 普通与长路径写法，保留调用方原来的文件路径。"""
+    path = Path(path)
+    if isinstance(path, WindowsPath) and path.is_absolute():
+        if len(path.drive) == 2 and path.drive.endswith(':'):
+            return WindowsPath('\\\\?\\' + str(path))
+        if path.drive.startswith('\\\\') and not path.drive.startswith(('\\\\?\\', '\\\\.\\')):
+            return WindowsPath('\\\\?\\UNC\\' + str(path)[2:])
+    return path
 
 
 def load_json(path):

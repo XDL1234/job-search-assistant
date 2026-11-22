@@ -33,7 +33,7 @@ SECTION_FIELDS = {
                  'role': ('项目角色', '角色', '职务', '职位', '担任角色', 'role'),
                  'description': ('项目描述', '项目概述', '项目介绍', '项目简介', '项目职责', '工作内容', '职责', 'description')},
     'awards': {'name': ('获奖项目', '获奖名称', '获奖项', '奖项', 'award'),
-               'date': ('获奖时间', '时间', 'date'), 'level': ('获奖级别', '级别', 'level'),
+               'date': ('获奖时间', '时间', 'date'), 'level': ('获奖级别', '获奖等级', '级别', '等级', 'level'),
                'description': ('获奖描述', '说明', 'description')},
     'languages': {'language': ('语言类型', '语种', '语言', 'language'), 'proficiency': ('掌握程度', '熟练程度', 'proficiency'),
                   'listening_speaking': ('听说',), 'reading_writing': ('读写',),
@@ -59,7 +59,15 @@ SENTENCE = re.compile(r'[。！？；;]')
 SCHOOL = re.compile(r'大学|学院|中学|学校|研究所|\buniversity\b|\bcollege\b', re.I)
 ROLE = re.compile(r'(工程师|实习生|经理|主管|总监|助理|专员|研究员|开发人员|开发|负责人|组长)$')
 EMPTY = re.compile(r'(?:暂无?|没有|不适用)(?:(?:相关)?(?:工作|实习|项目|获奖|语言)(?:经验|经历|情况)?)?[。.]?|[-—–/]+|n/?a|none', re.I)
-AWARD = re.compile(r'奖|冠军|奖学金|荣誉|荣获|名次|银牌|铜牌|金牌|\baward\b|\bhonor\b', re.I)
+AWARD = re.compile(r'奖|荣誉|荣获|名次|竞赛|大赛|挑战赛|\bawards?\b|\bhonors?\b', re.I)
+AWARD_LEVEL = re.compile(
+    r'(?:[（(]\s*)?(?:(?:荣获|获得|获)\s*)?'
+    r'(?P<level>(?:(?:国际级|国际|国家级|全国赛|全国|国赛|省级|省赛|市级|市赛|校级|院级|区级|赛区|'
+    r'预赛|初赛|复赛|总决赛|决赛)\s*)*'
+    r'(?:(?:特|[一二三四五六七八九十两1-9])\s*等\s*奖|[金银铜]\s*[奖牌]|冠军|亚军|季军|'
+    r'优胜奖|优秀奖|第\s*[一二三四五六七八九十百\d]+\s*名))\s*[）)]?$'
+)
+AWARD_SEPARATORS = ' \t|｜-—–：:、，,；;'
 LANGUAGE = re.compile(r'^(英语|英文|法语|日语|德语|韩语|俄语|西班牙语|汉语|中文|普通话|粤语|'
                       r'English|French|Japanese|German|Korean|Russian|Spanish|Chinese)(?=$|[^A-Za-z])', re.I)
 CERTIFICATE = re.compile(r'CET[ -]?[46]|(?:大学)?英语[四六]级|IELTS|TOEFL|雅思|托福|JLPT|日语能力考试', re.I)
@@ -137,28 +145,40 @@ def _identity_columns(section, row, columns):
             _put(row, 'role', role)
 
 
-def _add_list_entry(section, row, text):
-    if section == 'awards' and AWARD.search(text):
-        match = DATE_TOKEN.search(text)
-        if match:
-            _put(row, 'date', match[0])
-            text = (text[:match.start()] + text[match.end():]).strip(' \t|｜-—–：:、')
-        _put(row, 'name', text)
-        return True
-    if section == 'languages':
-        language = LANGUAGE.match(text)
-        certificate = CERTIFICATE.search(text)
-        if language or certificate:
-            if language:
-                _put(row, 'language', language[0])
-                text = text[language.end():].strip(' \t|｜：:、')
-            elif certificate[0].upper().startswith('JLPT') or '日语' in certificate[0]:
-                _put(row, 'language', '日语')
-            else:
-                _put(row, 'language', '英语')
-            _put(row, 'certificate' if certificate else 'proficiency', text)
-            return True
-    return False
+def _award_entry(text, current):
+    entry = {}
+    match = DATE_TOKEN.search(text)
+    if match:
+        _put(entry, 'date', match[0])
+        text = (text[:match.start()] + ' ' + text[match.end():]).strip(AWARD_SEPARATORS)
+    level = AWARD_LEVEL.search(text)
+    name = text[:level.start()].rstrip(AWARD_SEPARATORS) if level else text
+    if name and not (level or AWARD.search(name)):
+        return {}
+    if level:
+        same_date = not (entry.get('date') and current.get('date')) or entry['date'] == current['date']
+        if name or ('name' in current and 'level' not in current and same_date):
+            _put(entry, 'level', re.sub(r'\s+', '', level['level']))
+        else:
+            name = text
+    _put(entry, 'name', name)
+    return entry
+
+
+def _add_language_entry(row, text):
+    language = LANGUAGE.match(text)
+    certificate = CERTIFICATE.search(text)
+    if language:
+        _put(row, 'language', language[0])
+        text = text[language.end():].strip(' \t|｜：:、')
+    elif not certificate:
+        return False
+    elif certificate[0].upper().startswith('JLPT') or '日语' in certificate[0]:
+        _put(row, 'language', '日语')
+    else:
+        _put(row, 'language', '英语')
+    _put(row, 'certificate' if certificate else 'proficiency', text)
+    return True
 
 
 def _date_only(text):
@@ -225,16 +245,24 @@ def _parse_section(section, lines):
                 _put(row, 'description', original)
             else:
                 continue
-        else:
-            new_entry = {}
-            if _add_list_entry(section, new_entry, text):
-                if identity in row:
+        elif section == 'awards':
+            new_entry = _award_entry(text, row)
+            if new_entry:
+                if identity in row and identity in new_entry:
                     finish()
-                row.update(new_entry)
-            elif section == 'awards' and identity in row:
+                for field, value in new_entry.items():
+                    row.setdefault(field, value)
+            elif identity in row:
                 _put(row, 'description', original)
             else:
                 continue
+        else:
+            new_entry = {}
+            if not _add_language_entry(new_entry, text):
+                continue
+            if identity in row:
+                finish()
+            row.update(new_entry)
         traces.append((original, locator))
     finish()
     return items

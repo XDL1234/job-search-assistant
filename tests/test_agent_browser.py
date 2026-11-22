@@ -165,6 +165,43 @@ class BrowserBoundaryTests(unittest.TestCase):
                 browser_call(self.root,'return',uuid.uuid4().hex,expected_target='previous-target')
         run.assert_not_called()
 
+    def test_return_allows_tracking_changes_but_requires_original_list_page(self):
+        from job_assistant.agent_browser import browser_call
+        from job_assistant.boss_filter_scope import list_scope
+        run_id = uuid.uuid4().hex
+        listing = 'https://www.zhipin.com/web/geek/jobs?city=101280600&page=2'
+        detail = 'https://www.zhipin.com/job_detail/test.html'
+        filters = ['深圳', '实习']
+        state_folder = self.root / 'agent-browser-state'
+        state_folder.mkdir()
+        (state_folder / (run_id + '.json')).write_text(json.dumps({
+            'target_id': 'target-1', 'navigate': detail, 'return_url': listing + '&ka=original&lid=first',
+            'return_filters': filters, 'return_position': {'top': 30},
+        }), encoding='utf-8')
+        proof = {'target': 'target-1', 'scope': list_scope(listing), 'filters': filters}
+        canonical = {'url': listing + '&lid=second', 'list_empty': True, 'filters': filters,
+                     'position': {'top': 30, 'height': 800, 'viewport': 400}}
+        wrong_page = {**canonical, 'url': listing.replace('page=2', 'page=3')}
+        cases = [(detail, canonical, canonical, True), (canonical['url'], canonical, canonical, True),
+                 (detail, wrong_page, wrong_page, False), (detail, canonical, wrong_page, False)]
+        for current, observed, restored, succeeds in cases:
+            with self.subTest(current=current, observed=observed['url'], restored=restored['url']):
+                with patch.object(Browser, 'verify_target', return_value={'url': current}), \
+                        patch.object(Browser, 'command') as command, \
+                        patch.object(Browser, 'wait', side_effect=[observed, restored]), \
+                        patch.object(Browser, 'capture', side_effect=lambda result: result) as capture:
+                    if succeeds:
+                        result = browser_call(self.root, 'return', run_id, filter_scope=proof)
+                        self.assertEqual(result['url'], canonical['url'])
+                    else:
+                        with self.assertRaisesRegex(ValueError, '原筛选列表|原列表滚动位置'):
+                            browser_call(self.root, 'return', run_id, filter_scope=proof)
+                        capture.assert_not_called()
+                if current == detail:
+                    command.assert_called_once_with('back')
+                else:
+                    command.assert_not_called()
+
     def test_timeout_is_not_retried(self):
         with patch('job_assistant.agent_browser.subprocess.run',side_effect=subprocess.TimeoutExpired('tool',18)) as run:
             with self.assertRaisesRegex(ValueError,'不能重试'):Browser(self.root).command('click','@e1')
@@ -203,6 +240,29 @@ class BrowserBoundaryTests(unittest.TestCase):
         command.assert_not_called()
         with patch.object(browser,'verify_target'), patch.object(browser,'evaluate',side_effect=[initial,{**initial,'detail':'已变化'}]), patch.object(browser,'command'):
             with self.assertRaisesRegex(ValueError,'截图前后岗位'):browser.capture(initial)
+
+    def test_capture_crops_only_stable_fully_visible_elements_after_viewport_shot(self):
+        from PIL import Image
+        browser = Browser(self.root)
+        observation = {'url': 'https://www.zhipin.com/job_detail/a.html', 'heading': '合成岗位'}
+        bounds = [10, 20, 40, 50, 100, 60]
+
+        def screenshot(action, path):
+            self.assertEqual(action, 'screenshot')
+            canvas = Image.new('RGB', (200, 120), 'white')
+            canvas.paste('red', (20, 40, 80, 100))
+            canvas.save(path)
+
+        for after, expected in ((bounds, 'element'), ([*bounds[:4], 110, 60], 'viewport'), (None, 'viewport')):
+            with self.subTest(expected=expected), patch.object(browser, 'verify_target'), \
+                    patch.object(browser, 'evaluate', side_effect=[
+                        {**observation, 'capture_bounds': bounds}, {**observation, 'capture_bounds': after},
+                    ]), patch.object(browser, 'command', side_effect=screenshot):
+                captured = browser.capture(observation)
+                self.assertEqual(captured['capture_region'], expected)
+                with Image.open(captured['frame_file']) as image:
+                    self.assertEqual(image.size, (60, 60) if expected == 'element' else (200, 120))
+                    self.assertEqual(image.getpixel((0, 0)), (255, 0, 0) if expected == 'element' else (255, 255, 255))
 
     def test_inspection_without_run_only_reads_current_page_and_keeps_details_local(self):
         observed={'url':'https://www.zhipin.com/web/geek/chat','cards':[],
@@ -431,12 +491,12 @@ class NativeBrowserTests(unittest.TestCase):
         chrome=Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
         if not executable.is_file() or not chrome.is_file():
             self.fail('显式原生验收缺少固定运行时或Chrome')
-        listing='''<div class="city-label">测试城市</div><div class="job-card-wrapper"><a href="/job_detail/one.html"><span class="job-name">MCU实习</span></a><div class="company-name">本地测试公司</div><div class="tag-list">实习 FreeRTOS</div></div>'''
+        listing='''<div class="city-label">测试城市</div><div class="job-card-wrapper"><a href="/job_detail/one.html"><span class="job-name">MCU实习</span></a><div class="company-name">本地测试公司</div><div class="tag-list">实习 FreeRTOS 滑块电机驱动、验证码模块和安全验证流程设计</div></div>'''
         home_listing=(Path(__file__).parent/'fixtures/boss-home-cards.html').read_text(encoding='utf-8')
         modern_chat=(Path(__file__).parent/'fixtures/boss-chat-visible-identity.html').read_text(encoding='utf-8')
         search_listing=(Path(__file__).parent/'fixtures/boss-search-city.html').read_text(encoding='utf-8')
         refreshed_listing=listing.replace('/one.html','/fresh.html').replace('MCU实习','MCU新实习')
-        detail='''<main><div class="job-banner"><div class="name"><h1>MCU实习</h1></div><span class="salary">150元/天</span><div class="job-op"><button onclick="this.textContent='继续沟通'; document.querySelector('#other-banner').hidden=false; document.querySelector('#subscription').hidden=false">立即沟通</button><button id="other-banner" hidden>继续沟通</button></div></div><div class="company-info"><a>本地测试公司</a></div><div class="job-detail"><section class="job-detail-section"><h3>职位描述</h3><div class="job-sec-text">MCU FreeRTOS，仅本地测试，绝不连接招聘平台。</div></section><footer>动态城市链接</footer></div><div id="subscription" hidden><p>订阅回复消息</p><p>加载中…</p></div></main>'''
+        detail='''<main><div class="job-banner"><div class="name"><h1>MCU实习</h1></div><span class="salary">150元/天</span><div class="job-op"><button onclick="this.textContent='继续沟通'; document.querySelector('#other-banner').hidden=false; document.querySelector('#subscription').hidden=false">立即沟通</button><button id="other-banner" hidden>继续沟通</button></div></div><div class="company-info"><a>本地测试公司</a></div><div class="job-detail"><section class="job-detail-section"><h3>职位描述</h3><div class="job-sec-text">MCU FreeRTOS，负责滑块电机驱动、验证码模块和安全验证流程设计。仅本地测试。</div></section><footer>动态城市链接</footer></div><div id="subscription" hidden><p>订阅回复消息</p><p>加载中…</p></div></main>'''
         chat='''<ul class="user-list"><li role="listitem" data-id="hr1" class="active"><span class="name-box">本地HR</span></li></ul><div class="chat-content"><a href="/job_detail/one.html">岗位</a><div id="messages"><div class="message-item item-friend" data-mid="m1">多久可以到岗呢？</div></div><textarea class="chat-input"></textarea><button onclick="const d=document.createElement('div');d.className='message-item item-myself';d.dataset.mid='m2';d.textContent=document.querySelector('textarea').value;document.querySelector('#messages').append(d)">发送</button><input type="file" accept=".pdf" onchange="const d=document.createElement('div');d.className='message-item item-myself';d.dataset.mid='m4';d.textContent=this.files[0].name;document.querySelector('#messages').append(d)"></div>'''
         class Handler(BaseHTTPRequestHandler):
             dynamic_visits=0
@@ -555,11 +615,47 @@ class NativeBrowserTests(unittest.TestCase):
                     browser.command('open',origin+'/list')
                     observed=adapter.browser_call(root,'observe',run)
                     self.assertEqual(observed['cards'][0]['job'],'MCU实习')
+                    browser.command('eval','--stdin',script="document.body.insertAdjacentHTML('beforeend', '<div role=dialog hidden><h2>安全验证</h2><p>请拖动滑块完成验证</p></div>');true")
+                    self.assertEqual(browser.evaluate('observe')['cards'][0]['job'],'MCU实习')
+                    browser.command('eval','--stdin',script="document.querySelector('[role=dialog]').hidden=false;true")
+                    with self.assertRaisesRegex(ValueError,'人工验证'):
+                        browser.evaluate('observe')
+                    blocked=adapter.inspect_page(root,scope='jobs',expected_target=target['targetId'])
+                    self.assertEqual(blocked['status'],'manual_required')
+                    browser.command('open',origin+'/list')
+                    browser.command('eval','--stdin',script="document.body.insertAdjacentHTML('beforeend', '<input disabled placeholder=验证码>');true")
+                    with self.assertRaisesRegex(ValueError,'人工验证'):
+                        browser.evaluate('observe')
+                    browser.command('open',origin+'/list')
                     with Image.open(observed['frame_file']) as screenshot:self.assertEqual(screenshot.format,'PNG')
                     opened=adapter.browser_call(root,'open_job',run,key='/job_detail/one.html')
                     self.assertIn('FreeRTOS',opened['detail'])
                     self.assertEqual(opened['salary'],'150元/天')
                     self.assertEqual(opened['capture_region'],'element')
+                    self.assertEqual(opened['detail_greet_state'],'ready')
+                    browser.command('eval','--stdin',script="document.querySelector('.job-op').insertAdjacentHTML('beforeend','<button id=temporary-greet>立即沟通</button>');true")
+                    self.assertEqual(browser.evaluate('observe')['detail_greet_state'],'unknown')
+                    with self.assertRaisesRegex(ValueError,'唯一确定'):
+                        adapter.browser_call(root,'greet',run,url=origin+'/job_detail/one.html')
+                    browser.command('eval','--stdin',script="(() => {document.querySelector('#temporary-greet').remove();const button=document.querySelector('.job-op button');button.disabled=true;button.textContent='职位已下架';return true})()")
+                    unavailable=adapter.browser_call(root,'greet',run,url=origin+'/job_detail/one.html',observation_id=opened['observation_id'])
+                    self.assertEqual(unavailable['detail_greet_state'],'unavailable')
+                    self.assertTrue(unavailable['not_done'])
+                    self.assertFalse(unavailable['sent'])
+                    browser.command('eval','--stdin',script="(() => {const button=document.querySelector('.job-op button');button.disabled=false;button.textContent='立即沟通';return true})()")
+                    marker=browser.evaluate('greet',url=origin+'/job_detail/one.html')['click_selector']
+                    center=browser.command('eval','--stdin',script=f'''(() => {{
+                        const box=document.querySelector({json.dumps(marker)}).getBoundingClientRect();
+                        return [box.x+box.width/2,box.y+box.height/2];
+                    }})()''')['result']
+                    browser.command('eval','--stdin',script="document.querySelector('h1').textContent='同标签换了岗位';true")
+                    self.assertFalse(browser.command('eval','--stdin',script=f'!!document.querySelector({json.dumps(marker)})')['result'])
+                    # 原生坐标在同一文档更新前已取得，仍不得送到复用的按钮。
+                    browser.command('mouse','move',*map(str,center))
+                    browser.command('mouse','down','left')
+                    browser.command('mouse','up','left')
+                    self.assertFalse(browser.evaluate('observe')['detail_contacted'])
+                    browser.command('eval','--stdin',script="document.querySelector('h1').textContent='MCU实习';true")
                     with self.assertRaisesRegex(ValueError,'旧判断'):
                         adapter.browser_call(root,'greet',run,url=origin+'/job_detail/one.html',observation_id='stale')
                     greeted=adapter.browser_call(root,'greet',run,url=origin+'/job_detail/one.html',

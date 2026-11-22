@@ -1,6 +1,6 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Download, FileImage, Info, Layers, Maximize2, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Download, FileImage, Info, Layers, Maximize2, Minus, Plus, Search, X } from "lucide-react";
 import { request } from "../bridge";
 import { Button } from "../components/ui/button";
 import type { Attempt, Snapshot } from "../contracts";
@@ -22,6 +22,9 @@ const presets = [["all", "全部日期"], ["today", "今天"], ["week", "最近 
 const dateLabel = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" });
 const timeLabel = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const tabNames: Record<RecordTab, string> = { application: "申请信息", evidence: "截图留档" };
+const minListWidth = 38;
+const maxListWidth = 70;
+const clampListWidth = (width: number) => Math.max(minListWidth, Math.min(maxListWidth, width));
 
 function localDay(date: Date) {
   if (Number.isNaN(date.getTime())) return "";
@@ -179,18 +182,72 @@ function EvidenceGallery({ items, title, onEnlarge }: { items: Evidence[]; title
 
 function PhotoPreview({ photo, onClose }: { photo: Photo; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => { if (dialog.current && !dialog.current.open) dialog.current.showModal(); }, []);
+  const viewport = useRef<HTMLDivElement>(null);
+  const image = useRef<HTMLImageElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const changeZoom = useCallback((factor: number | "fit", x?: number, y?: number) => {
+    const view = viewport.current;
+    const img = image.current;
+    if (!view || !img?.naturalWidth) return;
+    const current = Number(img.style.zoom || 1);
+    const next = factor === "fit" ? 1 : Math.max(0.5, Math.min(5, current * factor));
+    if (next === current) return;
+    const frame = view.getBoundingClientRect();
+    const before = img.getBoundingClientRect();
+    const anchorX = x ?? frame.left + view.clientWidth / 2;
+    const anchorY = y ?? frame.top + view.clientHeight / 2;
+    const imageX = Math.max(0, Math.min(1, (anchorX - before.left) / before.width));
+    const imageY = Math.max(0, Math.min(1, (anchorY - before.top) / before.height));
+    img.style.zoom = String(next);
+    // 使用参与布局的缩放，以便通过滚动条查看超出视口的部分。
+    const after = img.getBoundingClientRect();
+    view.scrollLeft += after.left + after.width * imageX - anchorX;
+    view.scrollTop += after.top + after.height * imageY - anchorY;
+    setZoom(next);
+  }, []);
+  useEffect(() => {
+    if (dialog.current && !dialog.current.open) dialog.current.showModal();
+    const view = viewport.current;
+    if (!view) return;
+    const wheel = (event: WheelEvent) => {
+      if (!event.deltaY || event.shiftKey) return;
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? view.clientHeight : 1;
+      changeZoom(Math.exp(-event.deltaY * unit / 550), event.clientX, event.clientY);
+    };
+    view.addEventListener("wheel", wheel, { passive: false });
+    return () => view.removeEventListener("wheel", wheel);
+  }, [changeZoom]);
   return <dialog ref={dialog} className="records-photo-dialog" aria-label="截图预览" onClose={onClose}
-    onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
-    <div>
+    onClick={(event) => {
+      if (event.target === event.currentTarget || event.target === viewport.current) dialog.current?.close();
+    }}>
+    <div ref={viewport} className="records-photo-viewport" tabIndex={0} role="region" aria-label="截图查看区域">
+      <img ref={image} src={photo.url} alt={photo.name} draggable={false} />
+    </div>
+    <div className="records-photo-tools" role="group" aria-label="截图操作">
+      <button aria-label="缩小截图" title="缩小截图" disabled={zoom <= 0.5} onClick={() => changeZoom(0.8)}><Minus size={17} /></button>
+      <button aria-label="适应窗口" title="适应窗口" onClick={() => changeZoom("fit")}>{Math.round(zoom * 100)}%</button>
+      <button aria-label="放大截图" title="放大截图" disabled={zoom >= 5} onClick={() => changeZoom(1.25)}><Plus size={17} /></button>
       <button aria-label="关闭截图预览" onClick={() => dialog.current?.close()}><X size={20} /></button>
-      <img src={photo.url} alt={photo.name} />
     </div>
   </dialog>;
 }
 
-function RecordDetails({ attempt, snapshot, tab, onTab, onEnlarge }: {
-  attempt: Attempt; snapshot: Snapshot; tab: RecordTab; onTab: (tab: RecordTab) => void; onEnlarge: (photo: Photo) => void;
+function ApplicationAddress({ url }: { url: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const address = useId();
+  const action = expanded ? "收起" : "展开";
+  return <div className="records-address" data-expanded={expanded}>
+    <span id={address}>{url}</span>
+    <button type="button" className="records-accent-link" aria-label={`${action}申请地址`}
+      aria-controls={address} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{action}</button>
+  </div>;
+}
+
+function RecordDetails({ attempt, snapshot, tab, onTab, onClose, onEnlarge }: {
+  attempt: Attempt; snapshot: Snapshot; tab: RecordTab;
+  onTab: (tab: RecordTab) => void; onClose: () => void; onEnlarge: (photo: Photo) => void;
 }) {
   const tabs = useId();
   const fields = snapshot.fields.filter((field) => field.attempt_id === attempt.id);
@@ -210,7 +267,10 @@ function RecordDetails({ attempt, snapshot, tab, onTab, onEnlarge }: {
   return <aside className="records-details" aria-label="投递详情">
     <div className="records-details-heading">
       <div><h2>{attempt.company}</h2><p>{attempt.job} · {channelLabel(attempt.channel)}</p></div>
-      <span className={`records-result ${attempt.status}`}>{resultLabel(attempt)}</span>
+      <div className="records-details-actions">
+        <span className={`records-result ${attempt.status}`}>{resultLabel(attempt)}</span>
+        <button type="button" aria-label="关闭投递详情" title="关闭详情" onClick={onClose}><X size={17} /></button>
+      </div>
     </div>
     <div className="records-tabs" role="tablist" aria-label="投递详情内容" onKeyDown={(event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -228,7 +288,7 @@ function RecordDetails({ attempt, snapshot, tab, onTab, onEnlarge }: {
         <dl className="records-details-meta">
           <dt>投递时间</dt><dd>{fullTime(localDay(new Date(attempt.started || "")) ? attempt.started : attempt.updated)}</dd>
           <dt>最近更新</dt><dd>{fullTime(attempt.updated)}</dd>
-          {attempt.url && <><dt>申请地址</dt><dd>{attempt.url}</dd></>}
+          {attempt.url && <><dt>申请地址</dt><dd><ApplicationAddress key={attempt.id} url={attempt.url} /></dd></>}
           {attempt.reason && <><dt>处理说明</dt><dd>{attempt.reason}</dd></>}
         </dl>
         <h3>填写记录</h3>
@@ -253,9 +313,13 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
   const [result, setResult] = useState("");
   const [sort, setSort] = useState("newest");
   const [filter, setFilter] = useState<DateFilter>({ kind: "all" });
-  const [selectedId, setSelectedId] = useState("");
-  const [tab, setTab] = useState<RecordTab>("evidence");
+  const [selection, setSelection] = useState<{ id: string; tab: RecordTab }>();
+  const [listWidth, setListWidth] = useState(58);
   const [photo, setPhoto] = useState<Photo>();
+  const content = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ id: number; x: number; start: number; width: number } | null>(null);
+  const listId = useId();
   const now = new Date();
   const search = query.trim().toLowerCase();
   const availableDays = new Set(snapshot.attempts.map(attemptDay));
@@ -263,7 +327,17 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
     (!channel || record.channel === channel) && (!result || record.status === result) &&
     `${record.company} ${record.job}`.toLowerCase().includes(search) && matchesRecordDay(attemptDay(record), filter, now)
   )).sort((a, b) => sort === "newest" ? timestamp(b.updated) - timestamp(a.updated) : timestamp(a.updated) - timestamp(b.updated));
-  const selected = records.find((record) => record.id === selectedId) ?? records[0];
+  const selected = records.find((record) => record.id === selection?.id);
+  useEffect(() => {
+    if (selection && !selected) {
+      setSelection(undefined);
+      setPhoto(undefined);
+    }
+  }, [selection, selected]);
+  const closeDetails = () => {
+    list.current?.querySelector<HTMLButtonElement>('.records-select[aria-pressed="true"]')?.focus({ preventScroll: true });
+    setSelection(undefined);
+  };
   const scope = filter.kind === "day"
     ? parseDay(filter.day).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })
     : presets.find(([kind]) => kind === filter.kind)?.[1];
@@ -274,25 +348,26 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
       <Button className="records-export" title="导出全部投递记录"
         disabled={exporting || !isTauri()} onClick={onExport}><Download size={18} />导出 Excel</Button>
     </div>
-    <div className="records-content">
-      <div className="records-list">
-        <div className="records-filters">
-          <label className="records-search"><Search size={19} />
-            <input aria-label="搜索记录" placeholder="搜索公司或岗位" value={query} onChange={(event) => setQuery(event.target.value)} />
-          </label>
-          <div className="records-filter-options">
-            <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
-              <option value="">全部渠道</option><option value="boss">BOSS</option><option value="web">官网</option>
-            </select>
-            <select aria-label="投递结果" value={result} onChange={(event) => setResult(event.target.value)}>
-              <option value="">全部结果</option>
-              {Object.entries(resultLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-            </select>
-            <select aria-label="更新时间排序" value={sort} onChange={(event) => setSort(event.target.value)}>
-              <option value="newest">最近更新</option><option value="oldest">最早更新</option>
-            </select>
-          </div>
-        </div>
+    <div className="records-filters" role="search" aria-label="筛选投递记录">
+      <label className="records-search"><Search size={19} />
+        <input aria-label="搜索记录" placeholder="搜索公司或岗位" value={query} onChange={(event) => setQuery(event.target.value)} />
+      </label>
+      <div className="records-filter-options">
+        <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
+          <option value="">全部渠道</option><option value="boss">BOSS</option><option value="web">官网</option>
+        </select>
+        <select aria-label="投递结果" value={result} onChange={(event) => setResult(event.target.value)}>
+          <option value="">全部结果</option>
+          {Object.entries(resultLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </select>
+        <select aria-label="更新时间排序" value={sort} onChange={(event) => setSort(event.target.value)}>
+          <option value="newest">最近更新</option><option value="oldest">最早更新</option>
+        </select>
+      </div>
+    </div>
+    <div ref={content} className="records-content" data-split={Boolean(selected)}
+      style={{ "--records-list-width": `${listWidth}%` } as CSSProperties}>
+      <div ref={list} id={listId} className="records-list">
         {filter.kind !== "all" && <p className="records-count" role="status">{scope} · {records.length} 条记录</p>}
         <div className="records-table-scroll"><table>
           <thead><tr><th>公司和岗位</th><th>渠道</th><th>结果</th><th aria-sort={sort === "newest" ? "descending" : "ascending"}>
@@ -301,16 +376,20 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
           <tbody>{records.map((record) => {
             const updated = new Date(record.updated);
             const day = localDay(updated);
-            return <tr key={record.id} data-selected={selected?.id === record.id} onClick={() => setSelectedId(record.id)}>
+            return <tr key={record.id} data-selected={selected?.id === record.id}
+              onClick={() => setSelection({ id: record.id, tab: "application" })}>
               <td><button className="records-select" aria-pressed={selected?.id === record.id}
-                title={`${record.company} · ${record.job}`} onClick={() => setSelectedId(record.id)}>
+                title={`${record.company} · ${record.job}`}>
                 <strong>{record.company}</strong>
                 <span>{record.job}</span>
               </button></td>
               <td><span className="records-channel">{channelLabel(record.channel)}</span></td>
               <td><span className={`records-result ${record.status}`}>{resultLabel(record)}</span></td>
               <td>{day ? <time dateTime={record.updated} title={fullTime(record.updated)}>{day.slice(5)} {timeLabel.format(updated)}</time> : "—"}</td>
-              <td><button className="records-more" aria-label="查看证据" title="查看证据" onClick={() => { setSelectedId(record.id); setTab("evidence"); }}>
+              <td><button className="records-more" aria-label="查看证据" title="查看证据" onClick={(event) => {
+                event.stopPropagation();
+                setSelection({ id: record.id, tab: "evidence" });
+              }}>
                 <FileImage size={17} />
               </button></td>
             </tr>;
@@ -320,8 +399,35 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
           <p>{snapshot.attempts.length ? "没有符合条件的投递记录" : "暂无投递记录"}</p>
         </div>}
       </div>
-      {selected ? <RecordDetails attempt={selected} snapshot={snapshot} tab={tab} onTab={setTab} onEnlarge={setPhoto} />
-        : <aside className="records-details records-empty" aria-label="投递详情"><p>选择一条投递记录查看详情</p></aside>}
+      {selected && selection && <>
+        <div className="records-divider" role="separator" aria-label="调整投递记录两栏宽度"
+          aria-orientation="vertical" aria-controls={listId} aria-valuemin={minListWidth} aria-valuemax={maxListWidth}
+          aria-valuenow={Math.round(listWidth)} aria-valuetext={`列表宽度 ${Math.round(listWidth)}%`} tabIndex={0}
+          onPointerDown={(event) => {
+            const width = content.current?.clientWidth;
+            if (event.button !== 0 || !width || drag.current) return;
+            event.preventDefault();
+            event.currentTarget.focus({ preventScroll: true });
+            event.currentTarget.setPointerCapture(event.pointerId);
+            drag.current = { id: event.pointerId, x: event.clientX, start: listWidth, width };
+          }}
+          onPointerMove={(event) => {
+            const start = drag.current;
+            if (start?.id !== event.pointerId) return;
+            setListWidth(clampListWidth(start.start + 100 * (event.clientX - start.x) / start.width));
+          }}
+          onLostPointerCapture={() => { drag.current = null; }}
+          onKeyDown={(event) => {
+            const widths: Record<string, number> = { ArrowLeft: listWidth - 3, ArrowRight: listWidth + 3, Home: minListWidth, End: maxListWidth };
+            const next = widths[event.key];
+            if (next === undefined) return;
+            event.preventDefault();
+            setListWidth(clampListWidth(next));
+          }}
+        />
+        <RecordDetails key={selected.id} attempt={selected} snapshot={snapshot} tab={selection.tab}
+          onTab={(next) => setSelection({ id: selected.id, tab: next })} onClose={closeDetails} onEnlarge={setPhoto} />
+      </>}
     </div>
     {photo && <PhotoPreview photo={photo} onClose={() => setPhoto(undefined)} />}
   </section>;

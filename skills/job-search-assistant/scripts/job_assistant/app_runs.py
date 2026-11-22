@@ -48,9 +48,13 @@ def preview_run(store, value, run_id=None):
     from .inputs import digest_file
     allowed = {'channels', 'target_roles', 'employment_type', 'boss_mode', 'boss_filters', 'execution_mode', 'max_contacts',
                'filters', 'cities', 'keywords', 'exclude_keywords', 'company_table', 'companies', 'columns', 'sheet',
-               'reviewed_company_table_sha256',
+               'reviewed_company_table_sha256', 'web_submit',
                'unknown_reply_mode', 'rules', 'window_title', 'poll_seconds'}
     config = {key: val for key, val in value.items() if key in allowed}
+    if config.get('channels') == ['web']:
+        config['web_submit'] = config.get('web_submit') is True
+    else:
+        config.pop('web_submit', None)
     profile = get_profile(store) or {}
     profile_path = profile.get('profile_path', '')
     resume_path = profile.get('resume_path', '')
@@ -217,6 +221,9 @@ def bind_session(store, params):
     return {'saved': True}
 
 
+MANUAL_WEB_PROFILE_FIELDS = ('document_type', 'document_number', 'photo_path', 'portfolio_path', 'other_attachment_path')
+
+
 def execution_context(store, run_id):
     session = app_session(store, run_id)
     config = verify_materials(store, run_id)
@@ -226,15 +233,25 @@ def execution_context(store, run_id):
     private_fields = []
     if config.get('simulation') is not True:
         identifier = profile.pop('id_number', '')
-        if isinstance(profile.get('sources'), dict):
-            profile['sources'].pop('id_number', None)
+        sources = profile.get('sources')
+        for key in MANUAL_WEB_PROFILE_FIELDS:
+            profile.pop(key, None)
+        if isinstance(sources, dict):
+            for key in ('id_number', *MANUAL_WEB_PROFILE_FIELDS):
+                sources.pop(key, None)
         if config['channels'] == ['web']:
             profile.pop('resume_text', None)
             profile.pop('sources', None)
             if identifier:
                 private_fields.append('profile.id_number')
-    return {'session': session, 'run': {'id': run_id, 'status': store.one('runs', run_id)['status']},
+    status = store.one('runs', run_id)['status']
+    pending = read_watch_state(store, run_id).get('pending_ai')
+    context = {'session': session, 'run': {'id': run_id, 'status': status},
             'control_generation': current_generation(store, run_id),
-            'pending_messages': read_watch_state(store, run_id).get('pending_ai'),
+            'pending_messages': pending,
             'config': config, 'profile': profile, 'private_profile_fields': private_fields,
             'skill_path': str(SKILL_ROOT / 'SKILL.md')}
+    if status == 'watching' and pending and config.get('unknown_reply_mode') == 'ai' and not config.get('simulation'):
+        from .reply_settings import read_settings
+        context['ai_reply_instructions'] = read_settings(store).get('ai_instructions', '')
+    return context

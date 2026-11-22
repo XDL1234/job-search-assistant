@@ -41,6 +41,7 @@ def main():
     env={k:v for k,v in os.environ.items() if not k.startswith(('JOB_ASSISTANT_','PYTHON','CARGO_','RUSTUP_'))}
     env['PATH']=os.environ['SystemRoot']+'/System32'
     env['JOB_ASSISTANT_DATA_DIR']=str(folder/'data')
+    env['JOB_ASSISTANT_SKIP_CHROME_SETUP']='1'
     env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS']=f'--remote-debugging-port={port}'
     env['WEBVIEW2_USER_DATA_FOLDER']=str(folder/'webview')
     # 用实际桌面快捷方式启动；路径按 PowerShell 字面量转义，不拼入可执行表达式。
@@ -83,7 +84,9 @@ def main():
             page.get_by_role('navigation',name='主导航').get_by_role('button',name='投递任务',exact=True).click()
             page.get_by_role('button', name='新建投递', exact=True).click()
             page.get_by_role('button', name='编辑岗位条件', exact=True).click()
-            page.get_by_label('求职城市', exact=True).fill('深圳')
+            city = page.get_by_role('group', name='求职城市', exact=True)
+            city.get_by_role('button', name='选择城市', exact=True).click()
+            city.get_by_role('button', name='深圳', exact=True).click()
             page.get_by_role('button', name='保存条件', exact=True).click()
             expect(page.get_by_text('已保存岗位条件。', exact=True)).to_be_visible()
             page.get_by_role('button', name='关闭岗位条件编辑', exact=True).click()
@@ -103,8 +106,7 @@ def main():
             expect(page.get_by_role('status')).to_contain_text('记录已导出',timeout=20000)
             assert destination.is_file()
             report['worker_export']='passed'
-            page.locator('.sidebar').get_by_role('button', name='设置', exact=True).click()
-            page.get_by_role('button', name='连接与诊断', exact=True).click()
+            page.get_by_role('navigation',name='主导航').get_by_role('button',name='连接与诊断',exact=True).click()
             expect(page.get_by_role('button',name='连接 Chrome',exact=True)).to_be_enabled()
             expect(page.get_by_role('button',name='检查当前页面')).to_be_disabled()
             runtime=page.evaluate("window.__TAURI_INTERNALS__.invoke('browser_runtime_status')")
@@ -115,7 +117,7 @@ def main():
             if args.connect:
                 page.get_by_role('button',name='连接 Codex',exact=True).click()
                 expect(page.get_by_role('button', name='连接 Codex', exact=True)).to_be_enabled(timeout=90000)
-                report['connection_text']=page.locator('.settings-page').inner_text()
+                report['connection_text']=page.get_by_role('region', name='连接与诊断').inner_text()
                 page.screenshot(path=str(folder/'installed-connection.png'))
             close_window(pid)
             deadline=time.monotonic()+75

@@ -40,12 +40,25 @@ pub fn turn_failure(turn: &Value) -> Option<String> {
                 .into(),
         );
     }
-    Some(
-        turn["error"]["message"]
-            .as_str()
-            .unwrap_or("Codex 执行失败，任务已暂停")
-            .to_owned(),
-    )
+    let message = turn["error"]["message"].as_str().unwrap_or("Codex 执行失败，任务已暂停");
+    if serde_json::from_str::<Value>(message).is_ok_and(|body| body["error"]["code"] == "model_not_found") {
+        return Some("ChatGPT 账号暂时无法使用 Codex 返回的模型，任务已暂停。请重新连接 Codex 后继续。".into());
+    }
+    Some(message.to_owned())
+}
+
+fn account_model(models: &[Value], needs_image: bool) -> Option<&Value> {
+    let mut visible = models.iter().filter(|model| {
+        let modalities = model["inputModalities"].as_array();
+        model["hidden"] == false
+            && model["model"].as_str().is_some_and(|slug| !slug.is_empty())
+            && modalities.is_some_and(|items| {
+                items.contains(&json!("text")) && (!needs_image || items.contains(&json!("image")))
+            })
+    });
+    let first = visible.next()?;
+    if first["isDefault"] == true { Some(first) }
+    else { visible.find(|model| model["isDefault"] == true).or(Some(first)) }
 }
 pub fn decode_message(line: &str) -> Result<MessageKind, String> {
     let value: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
@@ -117,12 +130,27 @@ impl CodexClient {
         cwd: &Path,
         events: mpsc::UnboundedSender<Value>,
         proxy_environment: &HashMap<String, String>,
+        existing_home: Option<&Path>,
     ) -> Result<Arc<Self>, String> {
         let mut command = Command::new(exe);
         command
             .args(["app-server", "--listen", "stdio://"])
             .current_dir(cwd)
-            .envs(proxy_environment);
+            .envs(proxy_environment)
+            .env("CODEX_HOME", cwd.join("codex"))
+            .env_remove("CODEX_SQLITE_HOME")
+            .env("TEMP", cwd.join("tmp"))
+            .env("TMP", cwd.join("tmp"));
+        if let Some(home) = existing_home {
+            // 用户主动选择后由 Codex 读取自己的登录，运行日志与数据库留在求职助手。
+            command.env("CODEX_HOME", home).env("CODEX_SQLITE_HOME", cwd.join("codex"))
+                .env_remove("OPENAI_BASE_URL")
+                .arg("-c").arg(format!("sqlite_home={}", json!(cwd.join("codex"))))
+                .arg("-c").arg(format!("log_dir={}", json!(cwd.join("codex/log"))))
+                .args(["-c", "history.persistence=\"none\"", "-c", "model_provider=\"openai\"",
+                    "-c", "chatgpt_base_url=\"https://chatgpt.com/backend-api/\"",
+                    "-c", "analytics.enabled=false", "-c", "features.hooks=false"]);
+        }
         Self::spawn_command(command, events).await
     }
 
@@ -186,6 +214,36 @@ impl CodexClient {
         self.request_with_timeout(method, params, Duration::from_secs(60))
             .await
     }
+
+    pub(crate) async fn request_thread(
+        &self, method: &str, mut params: Value, effective: &Value, needs_image: bool,
+    ) -> Result<Value, String> {
+        let account = self.request_with_timeout("account/read", json!({"refreshToken":false}), Duration::from_secs(5)).await?;
+        if account["account"]["type"] == "chatgpt" {
+            let mut models = Vec::new();
+            let mut cursor = Value::Null;
+            for _ in 0..5 {
+                let page = self.request_with_timeout("model/list", json!({"limit":100,"includeHidden":false,"cursor":cursor}), Duration::from_secs(10))
+                    .await.map_err(|error| format!("无法读取 ChatGPT 账号的 Codex 模型目录：{error}"))?;
+                models.extend(page["data"].as_array().ok_or("Codex 模型目录格式无效")?.iter().cloned());
+                cursor = page["nextCursor"].clone();
+                if cursor.is_null() { break; }
+            }
+            // 复用账号可能继承第三方模型、推理级别和加速配置，以当前 ChatGPT 模型目录为准。
+            let model = account_model(&models, needs_image).ok_or("当前 ChatGPT 账号的 Codex 模型目录中没有可用于此任务的模型")?;
+            params["model"] = model["model"].clone();
+            if !model["defaultReasoningEffort"].is_null() {
+                params["config"]["model_reasoning_effort"] = model["defaultReasoningEffort"].clone();
+            }
+            let tier = &effective["config"]["service_tier"];
+            if tier.is_string() && !model["serviceTiers"].as_array().is_some_and(|tiers| tiers.iter().any(|item| &item["id"] == tier)) {
+                params["serviceTier"] = json!("default");
+            }
+        } else if account["account"].is_null() {
+            return Err("Codex 授权已失效，请重新连接".into());
+        }
+        self.request(method, params).await
+    }
     pub async fn request_with_timeout(
         &self,
         method: &str,
@@ -219,5 +277,39 @@ impl CodexClient {
     }
     pub async fn close(&self) {
         let _ = self.child.lock().await.kill().await;
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn chatgpt_threads_use_the_account_catalog_instead_of_inherited_models() {
+        let mut command = Command::new(std::env::var("JOB_ASSISTANT_PYTHON").unwrap_or("python".into()));
+        command.arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_codex.py"));
+        let (sender, _events) = mpsc::unbounded_channel();
+        let client = CodexClient::spawn_command(command, sender).await.unwrap();
+        let effective = json!({"config":{
+            "model":"gpt-6.2-sol","model_reasoning_effort":"ultra","service_tier":"priority"
+        }});
+        let initial = json!({"config":{"features":{"shell_tool":false}}});
+        let text = client.request_thread("thread/start", initial.clone(), &effective, false).await.unwrap();
+        assert_eq!(text["model"], "text-only");
+        let image = client.request_thread("thread/resume", initial, &effective, true).await.unwrap();
+        assert_eq!(image["model"], "account-image");
+        assert_eq!(image["config"]["model_reasoning_effort"], "medium");
+        assert_eq!(image["config"]["features"]["shell_tool"], false);
+        assert_eq!(image["serviceTier"], "default");
+        client.close().await;
+    }
+
+    #[test]
+    fn model_rejection_is_reported_without_raw_provider_json() {
+        let message = json!({"type":"error","status":400,"error":{
+            "type":"invalid_request_error","code":"model_not_found"
+        }});
+        assert!(turn_failure(&json!({"status":"failed","error":{"message":message.to_string()}}))
+            .unwrap().contains("重新连接 Codex"));
     }
 }

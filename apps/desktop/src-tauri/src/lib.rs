@@ -1,9 +1,13 @@
 pub mod codex;
 pub mod ai_usage;
 pub mod browser_runtime;
+mod company_page;
+mod company_web;
+mod dedicated_chrome;
 mod dialog;
 pub mod executor;
 mod lifecycle;
+mod web_autofill;
 pub mod worker;
 use executor::{Connection, ExecutorCoordinator};
 use serde_json::{json, Value};
@@ -49,19 +53,31 @@ fn codex_status(state: State<'_, Arc<ExecutorCoordinator>>) -> Connection {
 async fn codex_connect(
     app: AppHandle,
     state: State<'_, Arc<ExecutorCoordinator>>,
+    reuse_login: Option<bool>,
 ) -> Result<Connection, String> {
-    Ok(state.inner().connect(app).await)
+    Ok(state.inner().connect(app, reuse_login.unwrap_or(false)).await)
 }
 #[tauri::command]
 async fn codex_login(
     app: AppHandle,
     state: State<'_, Arc<ExecutorCoordinator>>,
 ) -> Result<Connection, String> {
-    state.login(&app).await
+    state.inner().login(app).await
+}
+#[tauri::command]
+async fn codex_cancel_login(
+    app: AppHandle,
+    state: State<'_, Arc<ExecutorCoordinator>>,
+) -> Result<Connection, String> {
+    Ok(state.cancel_login(&app).await)
 }
 #[tauri::command]
 async fn browser_connect(state: State<'_, Arc<ExecutorCoordinator>>) -> Result<Value, String> {
     state.browser_connect().await
+}
+#[tauri::command]
+async fn browser_refresh_tabs(state: State<'_, Arc<ExecutorCoordinator>>) -> Result<Value, String> {
+    state.browser_refresh_tabs().await
 }
 #[tauri::command]
 async fn browser_inspect(state: State<'_, Arc<ExecutorCoordinator>>, scope: Option<String>) -> Result<Value, String> {
@@ -92,11 +108,11 @@ async fn browser_select_tab(state: State<'_, Arc<ExecutorCoordinator>>, target_i
     state.browser_select_tab(target_id).await
 }
 #[tauri::command]
-async fn browser_preview_start(state: State<'_, Arc<ExecutorCoordinator>>, on_event: Channel<PreviewEvent>) -> Result<Value, String> {
+async fn browser_preview_start(state: State<'_, Arc<ExecutorCoordinator>>, on_event: Channel<PreviewEvent>, run_id: Option<String>) -> Result<Value, String> {
     if state.closing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("应用正在关闭".into());
     }
-    state.browser.start_preview(on_event).await
+    state.start_browser_preview(run_id, on_event).await
 }
 #[tauri::command]
 async fn browser_preview_ack(state: State<'_, Arc<ExecutorCoordinator>>, epoch: String, seq: u64) -> Result<(), String> {
@@ -145,9 +161,30 @@ pub fn run() {
         .setup(|app| {
             let worker = WorkerClient::from_environment(&app.path().resource_dir()?)
                 .map_err(std::io::Error::other)?;
-            tauri::async_runtime::block_on(worker.call("recover_app", json!({})))
-                .map_err(std::io::Error::other)?;
-            app.manage(Arc::new(ExecutorCoordinator::new(worker)));
+            let legacy_home = std::env::var_os("USERPROFILE")
+                .map(std::path::PathBuf::from)
+                .map_or_else(|| app.path().home_dir(), Ok)?;
+            let legacy = legacy_home.join(".job-search-assistant/desktop");
+            let legacy_webview = app.path().app_local_data_dir().ok();
+            tauri::async_runtime::block_on(async {
+                worker.prepare_storage(&legacy, legacy_webview.as_deref()).await?;
+                worker.call("recover_app", json!({})).await
+            }).map_err(|error| {
+                dialog::startup_error(&error);
+                std::io::Error::other(error)
+            })?;
+            let webview = worker.root.join("webview");
+            let runtime = Arc::new(ExecutorCoordinator::new(worker));
+            app.manage(runtime.clone());
+            app.manage(web_autofill::WebAutofill::default());
+            let config = app.config().app.windows.iter().find(|window| window.label == "main")
+                .ok_or_else(|| std::io::Error::other("缺少求职助手主窗口配置"))?;
+            tauri::WebviewWindowBuilder::from_config(app, config)?
+                .data_directory(webview)
+                .build()?;
+            if std::env::var("JOB_ASSISTANT_SKIP_CHROME_SETUP").as_deref() != Ok("1") {
+                tauri::async_runtime::spawn(async move { let _ = runtime.browser_startup().await; });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -156,10 +193,12 @@ pub fn run() {
             codex_status,
             codex_connect,
             codex_login,
+            codex_cancel_login,
             executor_control,
             executor_confirm_revision,
             dialog::pick_file,
             browser_connect,
+            browser_refresh_tabs,
             browser_inspect,
             browser_apply_job_preferences,
             browser_runtime_status,
@@ -169,6 +208,11 @@ pub fn run() {
             browser_preview_start,
             browser_preview_ack,
             browser_preview_stop,
+            web_autofill::web_autofill_open,
+            web_autofill::web_autofill_tabs,
+            web_autofill::web_autofill_scan,
+            web_autofill::web_autofill_advice,
+            web_autofill::web_autofill_fill,
             inbox_send,
             inbox_open
         ])

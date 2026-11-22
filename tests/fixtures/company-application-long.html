@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'">
+  <title>北林智造招聘｜嵌入式开发工程师</title>
+  <style>
+    body { margin: 0 auto; width: min(720px, 90%); font: 16px sans-serif; color: #1d3346; }
+    header { padding: 24px 0; }
+    fieldset { margin: 0 0 18px; padding: 20px; border: 1px solid #bccbd5; border-radius: 8px; }
+    legend { font-weight: bold; }
+    label { display: block; margin-bottom: 14px; }
+    input, textarea, select { display: block; box-sizing: border-box; width: 100%; margin-top: 5px; padding: 7px; }
+    button { padding: 8px 14px; }
+    dialog { width: min(420px, 80vw); padding: 20px; }
+    #application > fieldset:first-child { min-height: 520px; }
+    #receipt { font-size: 20px; margin: 24px 0; }
+  </style>
+</head>
+<body>
+  <header><h1>北林智造招聘</h1><p>应聘岗位：嵌入式开发工程师</p></header>
+  <form id="application">
+    <fieldset>
+      <legend>申请人资料</legend>
+      <label>申请人姓名<input name="name" autocomplete="off" required></label>
+      <label>电子邮件<input name="email" type="email" value="existing@example.invalid" required></label>
+      <label>个人主页（选填）<input name="website" type="url"></label>
+    </fieldset>
+    <fieldset>
+      <legend>教育经历</legend>
+      <p id="education-summary">尚未添加教育经历</p>
+      <button id="add-education" type="button">新增教育经历</button>
+      <dialog id="education-editor" aria-labelledby="editor-title">
+        <h2 id="editor-title">编辑教育经历</h2>
+        <div id="education-fields"></div>
+        <button id="done-education" type="button">下一步：返回申请表</button>
+      </dialog>
+    </fieldset>
+    <fieldset>
+      <legend>申请附件</legend>
+      <label>简历附件<input name="resume" type="file" accept=".pdf" required></label>
+    </fieldset>
+    <button type="submit">提交申请</button>
+  </form>
+  <p id="receipt" role="status" hidden></p>
+  <script>
+    const form = document.querySelector('#application');
+    const dialog = document.querySelector('#education-editor');
+    const education = document.querySelector('#education-fields');
+    const summary = document.querySelector('#education-summary');
+    window.testSubmitCount = 0;
+    document.querySelector('#add-education').addEventListener('click', () => {
+      if (!education.childElementCount) {
+        education.insertAdjacentHTML('afterbegin',
+          '<label>毕业院校<input name="school" autocomplete="off" required></label>' +
+          '<label>所学专业<input name="major" autocomplete="off" required></label>');
+      }
+      dialog.showModal();
+    });
+    document.querySelector('#done-education').addEventListener('click', () => {
+      const fields = Array.from(education.querySelectorAll('input'));
+      if (!fields.every(field => field.reportValidity())) return;
+      summary.textContent = '已填写 1 条教育经历';
+      dialog.close();
+    });
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (!education.childElementCount) return;
+      window.testSubmitCount++;
+      const submitted = new FormData(form);
+      form.hidden = true;
+      const receipt = document.querySelector('#receipt');
+      const matches = submitted.get('name') === '合成求职者' &&
+        submitted.get('email') === 'existing@example.invalid' && submitted.get('website') === '' &&
+        submitted.get('school') === '合成大学' && submitted.get('major') === '合成专业' &&
+        submitted.get('resume').name === 'synthetic-resume.pdf';
+      receipt.textContent = matches ? '申请提交成功，回执编号 BL-LOCAL-001。' : '合成表单字段比对失败。';
+      receipt.hidden = false;
+    });
+  </script>
+</body>
+</html>

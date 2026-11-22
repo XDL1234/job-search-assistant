@@ -1,5 +1,6 @@
 """真实 Tauri/WebView2 窗口验收；调试端口仅供本测试，全部使用模拟数据。"""
 import argparse
+from contextlib import closing
 import ctypes
 import json
 from pathlib import Path
@@ -12,7 +13,10 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'skills/job-search-assistant/scripts'))
 from desktop_dev import environment
+from job_assistant.app_runs import preview_demo, start_run
+from job_assistant.store import Store
 from playwright.sync_api import sync_playwright, expect
 
 
@@ -79,6 +83,11 @@ def main():
         env['JOB_ASSISTANT_FIXTURE_DELAY_MS']='8000'
         env['JOB_ASSISTANT_FIXTURE_PID_PATH']=str(folder/'fixture.pid')
     env['JOB_ASSISTANT_DATA_DIR'] = str(folder / 'data')
+    env['JOB_ASSISTANT_SKIP_CHROME_SETUP'] = '1'
+    if not args.close_connecting:
+        with closing(Store(folder / 'data')) as store:
+            preview = preview_demo(store)
+            start_run(store, {'ticket': preview['ticket'], 'confirmed': True})
     env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = f'--remote-debugging-port={port}'
     env['WEBVIEW2_USER_DATA_FOLDER'] = str(folder / 'webview')
     process = subprocess.Popen([str(args.app.resolve())], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -104,11 +113,11 @@ def main():
             expect(page.get_by_role('heading', name='今天的求职进展')).to_be_visible(timeout=30000)
             expect(page.get_by_text('浏览器界面预览，执行器未连接。')).to_have_count(0)
             navigation = page.get_by_role('navigation', name='主导航')
-            expect(navigation.get_by_role('button')).to_have_count(4)
+            expect(navigation.get_by_role('button')).to_have_count(8)
             expect(navigation.get_by_role('button', name='投递任务', exact=True)).to_be_visible()
             page.screenshot(path=str(folder / '01-home.png'))
-            page.locator('.sidebar').get_by_role('button', name='设置', exact=True).click()
-            page.get_by_role('button', name='连接与诊断', exact=True).click()
+            navigation.get_by_role('button', name='连接与诊断', exact=True).click()
+            expect(page.get_by_role('button', name='运行本地演示', exact=True)).to_have_count(0)
             page.get_by_role('button', name='连接 Codex', exact=True).click()
             if args.close_connecting:
                 for _ in range(100):
@@ -130,11 +139,12 @@ def main():
                 report['close_during_connect']='passed'
                 return
             expect(page.locator('.workspace-topbar').get_by_role('button', name='Codex 已连接', exact=True)).to_be_visible(timeout=90000)
+            expect(page.get_by_text('Codex 已连接，可使用 AI 投递模式。', exact=True)).to_be_visible()
             report['connection'] = True
             page.screenshot(path=str(folder / '02-connection.png'))
-            page.get_by_role('button', name='运行本地演示', exact=True).click()
-            expect(page.get_by_role('dialog', name='确认本轮模拟任务')).to_be_visible()
-            page.get_by_role('button', name='确认范围，创建任务', exact=True).click()
+            navigation.get_by_role('button', name='投递任务', exact=True).click()
+            page.get_by_role('combobox', name='投递渠道').select_option('simulation')
+            page.get_by_role('button', name='本地演示任务', exact=True).click()
             expect(page.get_by_role('heading', name='本地演示任务', exact=True)).to_be_visible()
             expect(page.get_by_role('button', name='开始 / 恢复', exact=True)).to_be_enabled(timeout=15000)
             page.screenshot(path=str(folder / '03-running.png'))
@@ -143,7 +153,6 @@ def main():
             print(json.dumps({'ui':'passed', 'connection':'passed'},ensure_ascii=False),flush=True)
             if args.lifecycle:
                 import sqlite3
-                from contextlib import closing
                 for _ in range(2):
                     page.get_by_role('button', name='开始 / 恢复', exact=True).click()
                     page.get_by_role('button', name='暂停接管', exact=True).click()
@@ -164,7 +173,6 @@ def main():
             if args.execute:
                 # 使用独立 Chrome 配置，避免用户已有标签页改变测试窗口。
                 import sqlite3
-                from contextlib import closing
                 with closing(sqlite3.connect(folder / 'data/records.sqlite3')) as db:
                     config=json.loads(db.execute('SELECT config FROM runs ORDER BY created DESC LIMIT 1').fetchone()[0])
                 simulation=playwright.chromium.launch_persistent_context(str(folder/'simulation-browser'),channel='chrome',headless=False,
@@ -177,7 +185,6 @@ def main():
                 deadline=time.monotonic()+600
                 while time.monotonic()<deadline:
                     time.sleep(3)
-                    sys.path.insert(0,str(ROOT/'skills/job-search-assistant/scripts'))
                     from job_assistant.desktop import foreground
                     (folder/'foreground.json').write_text(json.dumps(foreground(),ensure_ascii=False),encoding='utf-8')
                     import sqlite3

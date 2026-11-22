@@ -15,6 +15,8 @@ python -X utf8 "tools/build_desktop.py" --reuse-resources
 
 复用资源前应确认 Python/Skill/内置执行器没有变更；变更后重新执行完整构建。资源清单记录路径、大小和 SHA256，拒绝明显的账户文件、个人资料和运行台账。许可证随包提供，清单不包含构建者用户目录。
 
+安装版将投递记录、截图、诊断、个人资料和专用浏览器数据写入安装目录的 `data`。请选择当前 Windows 用户可写的安装位置。由旧版本升级时，先退出旧的求职助手和求职专用 Chrome。首次打开后会复制旧资料并更新其中的路径，原目录可用于回退。内置 Codex 在 `data/codex` 单独保存登录和会话，升级后需要时可在应用内重新登录。
+
 产物位于 `dist/desktop`。上传 Windows x64 MSI、当前用户 EXE、`SHA256SUMS.txt` 和 `resource-manifest.json` 为 GitHub Release 附件，Git 提交只包含源码和文档。正式版使用普通 Release，说明采用 `docs/releases/<tag>.md`。测试版用预发布标签。
 
 发布前检查选目录、快捷方式、脱离源码启动、读取台账、正常退出及安装包校验。用 Windows Installer 检查 MSI 数据库和提取运行，并用当前用户 EXE 验证完整安装流程。真实平台测试按用户授权单独安排，Release 说明记录实站验收范围。

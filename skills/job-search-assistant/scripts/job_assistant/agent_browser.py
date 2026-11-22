@@ -11,6 +11,7 @@ import uuid
 from urllib.parse import urlsplit
 
 from .boss_filter_dom import FILTER_DOM
+from .boss_script import VERIFICATION_PROMPT, VERIFICATION_TITLE
 
 
 ORIGIN = 'https://www.zhipin.com'
@@ -23,20 +24,27 @@ PAGE_SCRIPT = r'''
 (async (args) => {
   const text = node => (node?.innerText || node?.textContent || '').trim();
   const all = selector => Array.from(document.querySelectorAll(selector));
-  const shown = node => {
-    if (!node || !node.getClientRects().length || node.disabled || node.getAttribute('aria-disabled')==='true') return false;
+  const visible = node => {
+    if (!node || !node.getClientRects().length) return false;
     const style=getComputedStyle(node);
     return !['hidden','collapse'].includes(style.visibility) && style.display!=='none' && style.opacity!=='0';
   };
+  const shown = node => visible(node) && !node.disabled && node.getAttribute('aria-disabled')!=='true';
   const get = (root, selector) => root?.querySelector(selector);
   function pageState(body) {
-    if (/安全验证|访问受限|操作过于频繁|请完成验证|滑块|验证码/.test(body)) return {status:'manual_required',message:'平台要求人工验证'};
+    const prompt=new RegExp(__VERIFY_PROMPT__), title=new RegExp(__VERIFY_TITLE__);
+    const verification=title.test(body.trim()) || body.split(/\r?\n/).some(line=>prompt.test(line.trim())) ||
+      all('input[placeholder*="验证码"],input[aria-label*="验证码"],.geetest_panel,.yidun_popup,.nc_wrapper,iframe[src*="captcha" i]').some(visible) ||
+      all('h1,h2,[role="alert"],[role="alertdialog"],[role="dialog"]').some(node =>
+        visible(node) && !node.closest('.job-banner,.job-sec-text,.job-card-wrapper,.job-card-box,.card-area,.sub-li,.message-item,.chat-message') &&
+        (node.innerText || '').split(/\r?\n/).some(line=>title.test(line.trim())));
+    if (verification) return {status:'manual_required',message:'平台要求人工验证'};
     if (/扫码登录|登录后查看|请先登录/.test(body)) return {status:'login_required',message:'请先完成浏览器登录'};
     return {status:'ready',message:''};
   }
   function guard() {
     if (location.origin !== args.origin) throw Error('页面不在授权网站');
-    const body = text(document.body);
+    const body=(document.body?.innerText || '').trim();
     const state=pageState(body);
     if (!args.diagnostic && state.status!=='ready') throw Error(state.message+'，已停止');
     if (Date.now() > args.expires_at_ms) throw Error('浏览器动作已过期');
@@ -155,9 +163,19 @@ PAGE_SCRIPT = r'''
     return {conversation:current?.key||'',identity_source:current?.identity_source||'',messages,
       job_keys:[...new Set(jobs)],job_context,conversations:conversations().map(({_element,...row})=>row)};
   }
-  const greetActions = pattern => all('.job-op button,.job-op a,.job-op [role="button"],.job-banner button,.job-banner a,.job-banner [role="button"]')
-    .filter(node=>shown(node)&&pattern.test(text(node)));
-  const contacted = () => greetActions(/^(继续沟通|已沟通)$/).length > 0;
+  const greetControls = '.job-op button,.job-op a,.job-op [role="button"],.job-banner button,.job-banner a,.job-banner [role="button"]';
+  const greetLabel = /^(立即沟通|立即开聊|打招呼)$/;
+  const jobHeading = () => text(get(document,'.job-banner .name h1,.job-name h1,.job-title h1'));
+  function greetState() {
+    if (!location.pathname.startsWith('/job_detail/')) return {state:'unknown'};
+    const buttons=all(greetControls).filter(shown);
+    const ready=buttons.filter(node=>greetLabel.test(text(node)));
+    const contacted=buttons.some(node=>/^(继续沟通|已沟通)$/.test(text(node)));
+    const closed=all(greetControls+',.job-status,.job-status-tip,.job-detail-empty,.job-invalid-tip').filter(visible).some(node=>
+      /^(?:(?:该)?(?:职位|岗位)(?:已(?:下架|下线|关闭|失效)|不存在)|(?:已)?停止招聘|招聘已结束)[。！!]?$/.test(text(node)));
+    if (ready.length) return ready.length===1 && !contacted && !closed ? {state:'ready',button:ready[0]} : {state:'unknown'};
+    return {state:contacted?'contacted':closed?'unavailable':'unknown'};
+  }
   function jobDescription() {
     const bodies=all('.job-sec-text').filter(shown).map(node=>{
       const section=node.closest('.job-detail-section,.job-sec,.detail-section-item');
@@ -171,8 +189,8 @@ PAGE_SCRIPT = r'''
         .filter(Boolean).join('\n')).join('\n\n')};
   }
   function snapshot(includeChat=false) {
-    const body=guard(), scroll=scroller(), description=jobDescription();
-    let capture_selector=null;
+    const body=guard(), scroll=scroller(), description=jobDescription(), greeting=greetState().state;
+    let capture_bounds=null;
     if (args.capture) {
       const heading=get(document,'.job-banner .name h1,.job-name h1,.job-title h1');
       const detail=description.nodes.at(-1);
@@ -180,26 +198,25 @@ PAGE_SCRIPT = r'''
       if (!includeChat && heading && detail) while(region && !region.contains(detail)) region=region.parentElement;
       if (region && ![document.body,document.documentElement].includes(region) && shown(region)) {
         const box=region.getBoundingClientRect();
-        if (box.height>0 && box.height<=4096 && box.width>0 && box.width<=4096) {
-          region.setAttribute('data-job-assistant-shot',args.capture_key);
-          capture_selector='[data-job-assistant-shot="'+args.capture_key+'"]';
-        }
+        if (box.left>=0 && box.top>=0 && box.right<=innerWidth && box.bottom<=innerHeight &&
+            box.height>0 && box.width>0 && window.visualViewport?.scale===1)
+          capture_bounds=[box.left,box.top,box.right,box.bottom,innerWidth,innerHeight];
       }
     }
     return {url:location.href,title:document.title,cards:cards().map(({_element,...row})=>row),
       detail:description.text,
-      heading:text(get(document,'.job-banner .name h1,.job-name h1,.job-title h1')),
+      heading:jobHeading(),
       company:text(get(document,'.company-info a,.sider-company .company-name')),
       salary:text(get(document,'.job-banner .salary,.job-salary')),
       location:text(get(document,'.job-location,.location-address,.job-address')),
-      detail_contacted:contacted(),
+      detail_contacted:greeting==='contacted',detail_greet_state:greeting,
       list_empty: ['/web/geek/jobs','/web/geek/recommend'].includes(location.pathname.replace(/\/$/,'')) &&
         all('.job-list-empty,.job-list-container .empty-box,.search-job-result .empty-box')
           .some(node=>shown(node)&&/暂无相关职位|暂无符合条件|没有找到相关职位|未找到相关职位/.test(text(node))),
       filters:[...all('.filter-item.active,.filter-select .label,.city-label,.expect-item.active').map(text).filter(Boolean),
         ...(all('.sub-li a.job-info[href*="/job_detail/"]').some(shown)?['城市页面路径 '+location.pathname]:[])],
       text:body.slice(-18000),position:{top:scroll.scrollTop||0,height:scroll.scrollHeight,viewport:scroll.clientHeight},
-      capture_selector,
+      capture_bounds,
       ...(args.diagnostic?{diagnostics:diagnostics(body)}:{}),
       ...(includeChat?chat():{})};
   }
@@ -213,7 +230,7 @@ PAGE_SCRIPT = r'''
     if (!args.manual && /面试|interview|过来聊聊|预约时间|来(?:我们)?公司.*(?:聊|见)|到(?:公司|现场).*聊/i.test(latest.text)) throw Error('面试事项保持人工接管');
     return value;
   }
-  function observeChatTarget(check, invalidate) {
+  function observeActionTarget(check, invalidate) {
     const observer=new MutationObserver(()=>{ try {check();} catch {invalidate();} });
     observer.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,
       attributeFilter:['class','role','style','hidden','aria-hidden','aria-selected','data-id','data-mid','data-message-id','data-uid','data-user-id','disabled','type']});
@@ -221,25 +238,24 @@ PAGE_SCRIPT = r'''
   }
   const replyInput = () => get(document,'textarea.chat-input,[contenteditable="true"].chat-input,#chat-input');
   const replyDraft = input => input?.tagName==='TEXTAREA'?input.value:input?.innerText || '';
-  function markReplyButton(button) {
-    globalThis.__jobAssistantReplyCleanup?.();
+  function markCheckedButton(button, actionLabel, validate) {
+    globalThis.__jobAssistantActionCleanup?.();
     const selector=mark(button);
     const revoke=()=>{ if (button.matches(selector)) button.removeAttribute('data-job-assistant-action'); };
     const check=()=>{
-      targetChat();
-      if (replyDraft(replyInput())!==args.text || !button.matches(selector) || exactButton(/^发送$/)!==button)
-        throw Error('回复草稿或发送按钮已变化');
+      validate();
+      if (!button.matches(selector)) throw Error('已核对的按钮标记已失效');
     };
-    const observer=observeChatTarget(check,revoke);
+    const observer=observeActionTarget(check,revoke);
     const timer=setTimeout(dispose,Math.max(0,args.expires_at_ms-Date.now()));
     function dispose() {
       observer.disconnect();revoke();clearTimeout(timer);
       window.removeEventListener('click',verifyClick,true);
-      if (globalThis.__jobAssistantReplyCleanup===dispose) delete globalThis.__jobAssistantReplyCleanup;
+      if (globalThis.__jobAssistantActionCleanup===dispose) delete globalThis.__jobAssistantActionCleanup;
     }
     function verifyClick(event) {
       const path=event.composedPath();
-      if (!path.includes(button) && !path.some(node=>node instanceof Element && node.matches('button,a,[role="button"]') && /^发送$/.test(text(node)))) return;
+      if (!path.includes(button) && !path.some(node=>node instanceof Element && node.matches('button,a,[role="button"]') && actionLabel.test(text(node)))) return;
       try {
         if (!path.includes(button)) throw Error('当前点击的不是核验过的按钮');
         check();
@@ -247,8 +263,8 @@ PAGE_SCRIPT = r'''
         event.preventDefault();event.stopImmediatePropagation();
       } finally {dispose();}
     }
-    // 原生命令算坐标和派发鼠标之间也可能切换会话；在实际点击前再核验。
-    globalThis.__jobAssistantReplyCleanup=dispose;
+    // 原生命令算坐标后页面仍可能变化；在实际点击前再核验。
+    globalThis.__jobAssistantActionCleanup=dispose;
     window.addEventListener('click',verifyClick,true);
     return selector;
   }
@@ -301,15 +317,21 @@ __FILTER_DOM__
   if (args.step==='greet') {
     const expected=new URL(args.url);
     if (location.origin!==expected.origin || location.pathname!==expected.pathname) throw Error('当前岗位与发送目标不一致');
-    if (contacted()) return {sent:false,already_contacted:true,...snapshot()};
-    const buttons=greetActions(/^(立即沟通|立即开聊|打招呼)$/);
-    if (buttons.length!==1) throw Error('无法唯一确定目标岗位的立即沟通按钮');
-    return {click_selector:mark(buttons[0])};
+    const {state,button}=greetState();
+    if (state==='contacted'||state==='unavailable') return {sent:false,not_done:true,already_contacted:state==='contacted',
+      reason:state==='contacted'?'岗位已沟通，未重复发送':'岗位已停止招聘，未发送',...snapshot()};
+    if (state!=='ready') throw Error('无法唯一确定目标岗位的立即沟通按钮，未发送');
+    const heading=jobHeading();
+    return {click_selector:markCheckedButton(button,greetLabel,()=>{
+      guard();
+      if (location.origin!==expected.origin || location.pathname!==expected.pathname || jobHeading()!==heading || greetState().button!==button)
+        throw Error('岗位或沟通按钮已变化');
+    })};
   }
   if (args.step==='greet_receipt') {
     const expected=new URL(args.url);
     if (location.origin!==expected.origin || location.pathname!==expected.pathname) throw Error('沟通后目标页面已变化');
-    const sent=contacted();
+    const sent=greetState().state==='contacted';
     return {sent,uncertain:!sent,...snapshot()};
   }
   if (args.step==='fill_reply') {
@@ -328,7 +350,11 @@ __FILTER_DOM__
   if (args.step==='send_reply') {
     targetChat();
     if (replyDraft(replyInput())!==args.text) throw Error('回复正文已变化');
-    return {click_selector:markReplyButton(exactButton(/^发送$/))};
+    const label=/^发送$/, button=exactButton(label);
+    return {click_selector:markCheckedButton(button,label,()=>{
+      targetChat();
+      if (replyDraft(replyInput())!==args.text || exactButton(label)!==button) throw Error('回复草稿或发送按钮已变化');
+    })};
   }
   if (args.step==='prepare_resume') {
     const before=targetChat();
@@ -347,7 +373,7 @@ __FILTER_DOM__
       conversation.getAttribute('aria-selected')==='true'?'[aria-selected="true"]':' .friend-content.selected';
     const selector=':root:has([data-job-assistant-resume-conversation="'+args.upload_key+'"]'+identitySelector+selectedSelector+') input[data-job-assistant-upload="'+args.upload_key+'"]';
     const record={key:args.upload_key,input:inputs[0],selector};
-    record.observer=observeChatTarget(()=>checkResumeTarget(record),()=>clearResumeCheck(record));
+    record.observer=observeActionTarget(()=>checkResumeTarget(record),()=>clearResumeCheck(record));
     record.timer=setTimeout(()=>clearResumeCheck(record),Math.max(0,args.expires_at_ms-Date.now()));
     globalThis.__jobAssistantResumeTarget=record;
     return {selector,before_keys:before.messages.map(row=>row.key).filter(Boolean)};
@@ -372,7 +398,7 @@ __FILTER_DOM__
   }
   throw Error('不支持的浏览器步骤');
 })(__ARGS__)
-'''.replace('__FILTER_DOM__', FILTER_DOM)
+'''.replace('__FILTER_DOM__', FILTER_DOM).replace('__VERIFY_PROMPT__', json.dumps(VERIFICATION_PROMPT.pattern)).replace('__VERIFY_TITLE__', json.dumps(VERIFICATION_TITLE.pattern))
 
 
 def read_config(root):
@@ -424,7 +450,7 @@ class Browser:
         self.config = read_config(root)
         self.check = check or (lambda: None)
 
-    def command(self, *args, script=None):
+    def command(self, *args, script=None, before_dispatch=None):
         self.check()
         current = read_config(self.root)
         if any(current[key] != self.config[key] for key in ('session', 'executable', 'pinned_target')):
@@ -434,6 +460,8 @@ class Browser:
                    'timeout': 18, 'env': env, 'shell': False}
         if os.name == 'nt':
             options['creationflags'] = subprocess.CREATE_NO_WINDOW
+        if before_dispatch is not None:
+            before_dispatch()
         try:
             completed = subprocess.run([self.config['executable'], '--session', self.config['session'], '--pin-tab', '--json', *args], **options)
             if len(completed.stdout) > 4 * 1024 * 1024:
@@ -494,11 +522,14 @@ class Browser:
                 return result
             time.sleep(.35)
 
-    def click(self, prepared):
+    def click(self, prepared, before_dispatch=None):
         selector=prepared.get('click_selector','')
         if not re.fullmatch(r'\[data-job-assistant-action="[0-9a-f]{32}"\]',selector):
             raise ValueError('操作目标不是本轮核对的元素')
-        self.command('click', selector)
+        if before_dispatch is None:
+            self.command('click', selector)
+        else:
+            self.command('click', selector, before_dispatch=before_dispatch)
 
     def fill(self, prepared, value):
         selector=prepared.get('input_selector','')
@@ -533,20 +564,32 @@ class Browser:
         folder = self.root / 'frames'
         folder.mkdir(exist_ok=True)
         path = folder / (uuid.uuid4().hex + '.png')
-        selector = before.get('capture_selector')
-        if selector and not re.fullmatch(r'\[data-job-assistant-shot="[0-9a-f]{32}"\]', selector):
-            raise ValueError('截图区域不是本轮受控元素')
-        self.command('screenshot', *([selector] if selector else []), str(path))
+        # Chrome 的元素截图会临时调整浏览器视口。只采集当前视口，再裁剪完整可见的区域。
+        self.command('screenshot', str(path))
         self.verify_target()
-        after = self.evaluate('observe', chat='messages' in result)
+        after = self.evaluate('observe', chat='messages' in result, capture=True)
         if facts_hash(before) != facts_hash(after):
             raise ValueError('截图前后岗位或消息内容已变化，不能归档旧观察')
+        region = 'viewport'
+        bounds = before.get('capture_bounds')
+        if (isinstance(bounds, list) and len(bounds) == 6 and bounds == after.get('capture_bounds')
+                and all(type(value) in (int, float) for value in bounds)):
+            left, top, right, bottom, width, height = bounds
+            if 0 <= left < right <= width and 0 <= top < bottom <= height:
+                from PIL import Image
+                with Image.open(path) as original:
+                    x1, x2 = (round(x * original.width / width) for x in (left, right))
+                    y1, y2 = (round(y * original.height / height) for y in (top, bottom))
+                    cropped = original.crop((x1, y1, x2, y2)) if x2 > x1 and y2 > y1 else None
+                if cropped is not None:
+                    cropped.save(path, format='PNG')
+                    region = 'element'
         return {**result, 'frame_file': str(path), 'tab_id': self.config['pinned_target'],
-                'capture_region':'element' if selector else 'viewport'}
+                'capture_region': region}
 
 
 def facts_hash(result):
-    keys=('url','cards','heading','company','salary','location','detail','detail_contacted','list_empty','filters','conversation','identity_source','messages','job_keys','job_context')
+    keys=('url','cards','heading','company','salary','location','detail','detail_contacted','detail_greet_state','list_empty','filters','conversation','identity_source','messages','job_keys','job_context')
     facts={key:result[key] for key in keys if key in result}
     return hashlib.sha256(json.dumps(facts,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
 
@@ -595,7 +638,13 @@ def _registered_candidate(root, run_id, target, key, listing):
             'return_filters':listing.get('filters',[]),'source_card':card,'source_card_current':False}
 
 
-def browser_call(root, operation, run_id, check=None, **params):
+def _return_page_location(url):
+    parts = urlsplit(url or '')
+    query = '&'.join(pair for pair in parts.query.split('&') if pair.partition('=')[0] not in ('ka', 'lid'))
+    return parts._replace(query=query)
+
+
+def browser_call(root, operation, run_id, check=None, claim_greet=None, **params):
     if operation not in OPERATIONS or not re.fullmatch(r'[0-9a-f]{32}', run_id):
         raise ValueError('浏览器操作或轮次无效')
     browser = Browser(root, check)
@@ -624,8 +673,8 @@ def browser_call(root, operation, run_id, check=None, **params):
         selected['target_id']=browser.config['pinned_target']
         path.write_text(json.dumps(selected, ensure_ascii=False), encoding='utf-8')
         browser.command('open', destination)
-        result = browser.wait('observe', lambda row: bool(row.get('heading') and row.get('detail')))
-        if urlsplit(result['url']).path != urlsplit(destination).path or not result.get('heading'):
+        result = browser.wait('observe', lambda row: row.get('detail_greet_state')=='unavailable' or bool(row.get('heading') and row.get('detail')))
+        if urlsplit(result['url']).path != urlsplit(destination).path or not (result.get('heading') or result.get('detail_greet_state')=='unavailable'):
             raise ValueError('目标岗位详情未就绪')
         result['source_card']=selected['source_card']
         result['source_card_current']=selected.get('source_card_current',True)
@@ -637,19 +686,25 @@ def browser_call(root, operation, run_id, check=None, **params):
         destination=_boss_url(state['return_url'])
         if proof is not None:
             check_list_scope(proof, destination, state.get('return_filters'))
+        location = _return_page_location(destination)
         current=browser.verify_target()
-        if current['url']!=destination:
+        if _return_page_location(current['url']) != location:
             if urlsplit(current['url']).path!=urlsplit(state['navigate']).path:
                 raise ValueError('当前页不是本轮打开的岗位，不能盲目返回其他历史页面')
             browser.command('back')
-        listed=browser.wait('observe', lambda row: row.get('url')==destination and bool(row.get('cards') or row.get('list_empty')))
-        if listed.get('url')!=destination or listed.get('filters',[])!=state.get('return_filters',[]):
+
+        def original_list(row):
+            return (_return_page_location(row.get('url')) == location
+                    and row.get('filters', []) == state.get('return_filters', [])
+                    and bool(row.get('cards') or row.get('list_empty')))
+
+        if not original_list(browser.wait('observe', original_list)):
             raise ValueError('原筛选列表尚未恢复或筛选条件已变化')
         top=state['return_position']['top']
         def restored(row):
             position=row.get('position',{})
             requested=min(top,max(0,position.get('height',0)-position.get('viewport',0)))
-            return abs(position.get('top',-100)-requested)<20
+            return original_list(row) and abs(position.get('top',-100)-requested)<20
         result = browser.wait('restore',restored,top=top)
         if not restored(result):
             raise ValueError('原列表滚动位置尚未恢复，请核查后继续')
@@ -673,13 +728,17 @@ def browser_call(root, operation, run_id, check=None, **params):
         if not result.get('conversations') or (operation == 'open_conversation' and result.get('conversation') != params['conversation']):
             raise ValueError('未能识别目标聊天列表或会话，自动发送已暂停')
     elif operation == 'greet':
+        same_observation = True
         if params.get('observation_id'):
             observed=browser.evaluate('observe')
-            if facts_hash(observed)!=params['observation_id']:
+            same_observation = facts_hash(observed)==params['observation_id']
+            if not same_observation and observed.get('detail_greet_state') not in ('contacted','unavailable'):
                 raise ValueError('岗位观察已变化，旧判断不能继续沟通')
         result = browser.evaluate('greet', url=_boss_url(params['url']))
         if result.get('click_selector'):
-            browser.click(result)
+            if not same_observation:
+                raise ValueError('岗位观察已变化，旧判断不能继续沟通')
+            browser.click(result, before_dispatch=claim_greet)
             result = browser.wait('greet_receipt', lambda row: row.get('sent') is True, url=params['url'])
     elif operation in ('reply', 'resume'):
         upload_key=uuid.uuid4().hex
@@ -797,15 +856,15 @@ def check_current_source(root, run_id, config, job_key):
         check_list_scope(proof, source.get('return_url'), source.get('return_filters'))
 
 
-def action_check(store, run_id, operation, params):
-    """每次原生命令前重新检查已消费动作；不在等待浏览器时持有写事务。"""
+def action_check(store, run_id, operation, params, *, status='executing'):
+    """每次原生命令前重新检查动作；不在等待浏览器时持有写事务。"""
     def check():
         from .cli import verify_materials
         config = verify_materials(store, run_id)
         store.check_run(run_id, operation)
         action = store.one('actions', params.get('action_id', ''))
         if ('boss' not in config['channels'] or action['run_id'] != run_id
-                or action['status'] != 'executing' or action['kind'] != operation):
+                or action['status'] != status or action['kind'] != operation):
             raise ValueError('发送授权已变化或动作已失效')
         attempt = store.one('attempts', action['attempt_id'])
         if not store.owns_attempt(run_id, attempt['id']) or attempt['channel'] != 'boss':

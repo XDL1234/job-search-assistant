@@ -29,4 +29,15 @@ class ReplySettingsTests(unittest.TestCase):
         rule={'id':'x','category':'availability','reply':'以实际沟通为准','when':{},'enabled':False}
         self.assertFalse(self.call('save_reply_settings',settings={'unknown_reply_mode':'human','rules':[rule,rule]})['ok'])
 
+    def test_custom_ai_instructions_can_be_saved_validated_and_cleared(self):
+        value={'unknown_reply_mode':'ai','rules':[],'ai_instructions':'  用中文回复。\n控制在两句以内。  '}
+        self.assertTrue(self.call('save_reply_settings',settings=value)['ok'])
+        saved=self.call('get_reply_settings')['result']
+        self.assertEqual(saved['ai_instructions'],'用中文回复。\n控制在两句以内。')
+        for invalid in (None, {'invalid':True}, '字'*4001):
+            self.assertFalse(self.call('save_reply_settings',settings={**value,'ai_instructions':invalid})['ok'])
+            self.assertEqual(self.call('get_reply_settings')['result'],saved)
+        self.assertTrue(self.call('save_reply_settings',settings={**value,'ai_instructions':''})['ok'])
+        self.assertNotIn('ai_instructions',self.call('get_reply_settings')['result'])
+
 if __name__=='__main__':unittest.main()

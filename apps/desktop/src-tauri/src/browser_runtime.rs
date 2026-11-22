@@ -1,4 +1,5 @@
 //! agent-browser 的本机生命周期与只读 JPEG 订阅；媒体不经过 Python worker。
+use crate::company_web::CompanyPreviewTarget;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -15,7 +16,7 @@ use tauri::ipc::Channel;
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, watch, Mutex},
     task::JoinHandle,
 };
 use tokio_tungstenite::{
@@ -60,8 +61,18 @@ struct PageScope {
 
 impl PageScope {
     fn tabs(&self, tabs: &[Value]) -> Value {
-        json!(tabs.iter().filter(|tab| tab["url"].as_str().is_some_and(|url| self.permits(url)))
+        json!(tabs.iter().filter(|tab| self.selectable(tab))
             .cloned().collect::<Vec<_>>())
+    }
+
+    fn selectable(&self, tab: &Value) -> bool {
+        let Some(url) = tab["url"].as_str().filter(|url| self.permits(url)) else { return false; };
+        let path = url.strip_prefix("https://www.zhipin.com").unwrap_or("")
+            .split(['?', '#']).next().unwrap_or("");
+        let title = tab["title"].as_str().unwrap_or("");
+        !["/web/user", "/web/geek/login", "/web/common/security-check", "/user/login"]
+            .iter().any(|route| path == *route || path.strip_prefix(*route).is_some_and(|rest| rest.starts_with('/')))
+            && !title.contains("登录") && !title.contains("安全验证") && !title.contains("访问受限")
     }
 
     fn permits(&self, url: &str) -> bool {
@@ -111,7 +122,7 @@ impl BrowserRuntime {
             uuid::Uuid::new_v4().simple()
         );
         let state = json!({"protocol":1,"executable":executable,"session":session,
-            "connected":false,"pinned_target":null,"url":null,"connection_mode":"external",
+            "connected":false,"connecting":false,"pinned_target":null,"url":null,"connection_mode":"dedicated",
             "preview_state":"stopped"});
         Self {
             executable,
@@ -160,6 +171,7 @@ impl BrowserRuntime {
             .env_remove("JOB_ASSISTANT_EXISTING_DAEMON")
             .env("JOB_ASSISTANT_EMBEDDED", "1")
             .env("JOB_ASSISTANT_STREAM_TOKEN", &self.token)
+            .env("AGENT_BROWSER_SOCKET_DIR", self.root.join("agent-sockets"))
             .env("AGENT_BROWSER_STREAM_QUALITY", "65")
             .env("AGENT_BROWSER_STREAM_MAX_WIDTH", "1280")
             .env("AGENT_BROWSER_STREAM_MAX_HEIGHT", "900")
@@ -169,8 +181,6 @@ impl BrowserRuntime {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        #[cfg(test)]
-        command.env("AGENT_BROWSER_SOCKET_DIR", self.root.join("agent-sockets"));
         command
     }
 
@@ -304,9 +314,77 @@ impl BrowserRuntime {
         verify_probe(&value)
     }
 
-    pub async fn connect(&self) -> Result<Value, String> {
-        self.connect_args(&["--auto-connect", "tab", "list", "--json"])
-            .await
+    pub async fn connect(&self, startup: bool) -> Result<Value, String> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())["connecting"] = json!(true);
+        let result = self.connect_dedicated(startup).await;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state["connecting"] = json!(false);
+        state["connection_error"] = json!(result.as_ref().err());
+        drop(state);
+        let saved = self.save_state();
+        result.and(saved)
+    }
+
+    async fn connect_dedicated(&self, startup: bool) -> Result<(), String> {
+        let completed = self.root.join("chrome-setup-complete");
+        let profile = self.root.join("chrome-profile");
+        self.verify_runtime().await?;
+        let Some(endpoint) = crate::dedicated_chrome::endpoint(&profile, !startup || !completed.is_file()).await? else {
+            return Ok(());
+        };
+        if self.started.load(Ordering::SeqCst) {
+            self.shutdown().await;
+        }
+        let mut state = self.connect_args(&["--cdp", &endpoint, "tab", "list", "--json"]).await?;
+        std::fs::write(completed, b"").map_err(|_| "无法保存 Chrome 首次连接状态")?;
+        for attempt in 0..=4 {
+            if let Some(target) = automatic_target(&state) {
+                if self.select_tab(target.to_string()).await.is_err() {
+                    // 岗位页可能在两次读取之间跳转到登录页。刷新后让用户选择。
+                    let refreshed = self.refresh_tabs().await?;
+                    if refreshed["connected"] != true {
+                        return Err(refreshed["connection_error"].as_str()
+                            .unwrap_or("求职 Chrome 连接已断开").to_string());
+                    }
+                }
+                break;
+            }
+            if attempt == 4 || state["connected"] != true
+                || state["tabs"].as_array().is_some_and(|tabs| tabs.len() > 1) { break; }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            state = self.refresh_tabs().await?;
+        }
+        Ok(())
+    }
+
+    pub async fn refresh_tabs(&self) -> Result<Value, String> {
+        let _guard = self.command_lock.lock().await;
+        if self.status()["connected"] != true { return Ok(self.status()); }
+        let result = self.output(&["tab", "list", "--json"], true).await;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(value) => {
+                let tabs = value["tabs"].as_array().ok_or("浏览器未返回标签列表")?;
+                state["tabs"] = self.scope.tabs(tabs);
+                if let Some(tab) = state["tabs"].as_array().and_then(|tabs| tabs.iter().find(|tab|
+                    state["pinned_target"].is_string() && tab["targetId"] == state["pinned_target"])) {
+                    state["url"] = tab["url"].clone();
+                } else {
+                    state["pinned_target"] = Value::Null;
+                    state["url"] = Value::Null;
+                }
+                state["connection_error"] = Value::Null;
+            }
+            Err(message) => {
+                state["connected"] = json!(false);
+                state["pinned_target"] = Value::Null;
+                state["url"] = Value::Null;
+                state["tabs"] = json!([]);
+                state["connection_error"] = json!(message);
+            }
+        }
+        drop(state);
+        self.save_state()
     }
 
     async fn connect_args(&self, args: &[&str]) -> Result<Value, String> {
@@ -355,8 +433,7 @@ impl BrowserRuntime {
             .and_then(|tabs| tabs.iter().find(|tab| tab["targetId"] == target_id))
             .cloned()
             .ok_or("目标标签已关闭或不属于当前浏览器")?;
-        let url = selected["url"].as_str().ok_or("标签缺少网址")?;
-        if !self.scope.permits(url) {
+        if !self.scope.selectable(&selected) {
             return Err("请选中已登录的 BOSS 标签页".into());
         }
         {
@@ -371,13 +448,12 @@ impl BrowserRuntime {
             .output(&["--pin-tab", "tab", "list", "--json"], true)
             .await?;
         let actual_tabs = actual["tabs"].as_array().ok_or("浏览器未返回标签列表")?;
-        if !actual_tabs.iter().any(|tab| tab["targetId"] == target_id && tab["active"] == true) {
-            return Err("浏览器没有实际绑定到所选标签，已停止绑定".into());
-        }
+        let tab = actual_tabs.iter().find(|tab| tab["targetId"] == target_id && tab["active"] == true
+            && self.scope.selectable(tab)).ok_or("浏览器没有实际绑定到可用的 BOSS 标签，已停止绑定")?;
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state["pinned_target"] = json!(target_id);
-            state["url"] = json!(url);
+            state["url"] = tab["url"].clone();
             state["tabs"] = self.scope.tabs(actual_tabs);
         }
         self.save_state()
@@ -535,6 +611,89 @@ impl BrowserRuntime {
             .map_err(|_| "预览确认已过期或正在处理".into())
     }
 
+    pub(crate) async fn start_company_preview(
+        &self,
+        run: String,
+        mut updates: watch::Receiver<Option<CompanyPreviewTarget>>,
+        generation: impl Fn() -> Option<i64> + Send + 'static,
+        on_event: Channel<PreviewEvent>,
+    ) -> Result<Value, String> {
+        let _control = self.preview_control.lock().await;
+        self.stop_preview_locked().await;
+        let epoch = uuid::Uuid::new_v4().to_string();
+        let (ack, mut ack_rx) = mpsc::channel(1);
+        let (stop, mut stop_rx) = oneshot::channel();
+        let event_epoch = epoch.clone();
+        let task = tokio::spawn(async move {
+            let status = |state: &str, message: &str| on_event.send(PreviewEvent::Status {
+                epoch: event_epoch.clone(), state: state.into(), message: message.into(),
+            });
+            if status("connected", "网申实时画面已连接").is_err() { return; }
+            if status("waiting", "等待 AI 打开公司网页").is_err() { return; }
+            let mut label = "waiting";
+            let mut pending = None;
+            let mut seq = 0;
+            let mut pace = tokio::time::interval(Duration::from_millis(350));
+            pace.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut stop_rx => break,
+                    changed = updates.changed() => {
+                        if changed.is_err() { break; }
+                        pending = None;
+                        label = "waiting";
+                        if status(label, "正在等待当前公司网页的画面").is_err() { break; }
+                    }
+                    next = ack_rx.recv() => {
+                        if next.is_none() { break; }
+                        if next == pending { pending = None; }
+                    }
+                    _ = pace.tick() => {
+                        let target = updates.borrow().clone().filter(|target| {
+                            target.run == run && Some(target.generation) == generation()
+                        });
+                        let (state, message) = if let Some(target) = target {
+                            if pending.is_some() { continue; }
+                            let frame = tokio::time::timeout(Duration::from_secs(3), target.page.preview_frame()).await;
+                            if updates.has_changed().unwrap_or(true) || Some(target.generation) != generation() {
+                                continue;
+                            }
+                            match frame {
+                                Ok(Ok(Some(data))) => {
+                                    seq += 1;
+                                    let Ok((seq, data)) = validate_frame(&json!({"seq":seq,"data":data}), None) else {
+                                        if status("error", "网申实时画面格式无效").is_err() { break; }
+                                        continue;
+                                    };
+                                    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                                        .map_or(0, |time| time.as_millis() as u64);
+                                    if on_event.send(PreviewEvent::Frame { epoch: event_epoch.clone(), seq, data,
+                                        metadata: json!({"timestamp":timestamp}) }).is_err() { break; }
+                                    pending = Some(seq);
+                                    label = "connected";
+                                    continue;
+                                }
+                                Ok(Ok(None)) => ("blocked", "当前网页需要在求职专用 Chrome 中登录或核验"),
+                                _ => ("waiting", "正在等待公司网页加载或 Chrome 标签页恢复"),
+                            }
+                        } else {
+                            pending = None;
+                            ("waiting", "等待任务打开公司网页")
+                        };
+                        if state != label {
+                            label = state;
+                            if status(state, message).is_err() { break; }
+                        }
+                    }
+                }
+            }
+            let _ = status("stopped", "网申实时预览已停止");
+        });
+        *self.preview.lock().await = Some(PreviewSession { epoch: epoch.clone(), ack, stop, task });
+        Ok(json!({"epoch":epoch}))
+    }
+
     pub async fn stop_preview(&self) {
         let _control = self.preview_control.lock().await;
         self.stop_preview_locked().await;
@@ -585,6 +744,16 @@ mod live_tests;
 
 fn allowed_boss_url(url: &str) -> bool {
     url == "https://www.zhipin.com" || url.starts_with("https://www.zhipin.com/")
+}
+
+fn automatic_target(state: &Value) -> Option<&str> {
+    let [tab] = state["tabs"].as_array()?.as_slice() else { return None; };
+    // 地址回退标题只表示目标标签已创建，页面可能仍在加载或跳转。
+    let title = tab["title"].as_str()?.trim();
+    if title.is_empty() || title.trim_start_matches("https://").trim_start_matches("www.").starts_with("zhipin.com") {
+        return None;
+    }
+    tab["targetId"].as_str().filter(|id| !id.is_empty())
 }
 
 fn error_category(detail: &str) -> &'static str {
@@ -722,6 +891,22 @@ mod tests {
         let job = json!({"targetId":"job","url":"https://www.zhipin.com/web/geek/job"});
         let private = json!({"targetId":"other","url":"https://example.com/private"});
         assert_eq!(PageScope::default().tabs(&[job.clone(), private]), json!([job]));
+    }
+
+    #[test]
+    fn auto_binding_requires_one_loaded_non_login_boss_tab() {
+        let scope = PageScope::default();
+        let login = json!({"targetId":"login","url":"https://www.zhipin.com/web/user/?ka=login","title":"BOSS直聘"});
+        let check = json!({"targetId":"check","url":"https://www.zhipin.com/web/geek/job","title":"安全验证"});
+        let loading = json!({"targetId":"loading","url":"https://www.zhipin.com/web/geek/job","title":""});
+        let loading_fallback = json!({"targetId":"loading","url":"https://www.zhipin.com/web/geek/job","title":"zhipin.com/web/geek/job"});
+        let job = json!({"targetId":"job","url":"https://www.zhipin.com/web/geek/job","title":"BOSS直聘职位"});
+        let other = json!({"targetId":"other","url":"https://www.zhipin.com/web/geek/job?city=1","title":"招聘职位"});
+        assert_eq!(automatic_target(&json!({"tabs":scope.tabs(&[login.clone(), check.clone()])})), None);
+        assert_eq!(automatic_target(&json!({"tabs":scope.tabs(&[loading])})), None);
+        assert_eq!(automatic_target(&json!({"tabs":scope.tabs(&[loading_fallback])})), None);
+        assert_eq!(automatic_target(&json!({"tabs":scope.tabs(&[login, check, job.clone()])})), Some("job"));
+        assert_eq!(automatic_target(&json!({"tabs":scope.tabs(&[job, other])})), None);
     }
 
     #[test]

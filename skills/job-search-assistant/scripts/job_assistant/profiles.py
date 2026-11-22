@@ -8,7 +8,7 @@ import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 
-from .inputs import digest_file
+from .inputs import digest_file, path_key
 from .policy import value_at
 
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -226,7 +226,8 @@ def _read_profile_version(store):
         return None
     value = json.loads(pointer.read_text(encoding='utf-8'))
     path = Path(value['profile_path']).resolve()
-    if path.parent != store.root / 'profiles' or digest_file(path) != value['profile_sha256']:
+    if (path_key(path.parent) != path_key(store.root / 'profiles') or not path.is_file()
+            or digest_file(path) != value['profile_sha256']):
         raise ValueError('已保存资料版本丢失或变更，请重新导入')
     value['profile'] = json.loads(path.read_text(encoding='utf-8'))
     return value
@@ -239,7 +240,7 @@ def _managed_resume(store):
         return None
     saved = json.loads(pointer.read_text(encoding='utf-8'))
     path = Path(saved['path']).resolve()
-    if (path.parent.parent != folder or not re.fullmatch(r'[0-9a-f]{32}', path.parent.name)
+    if (path_key(path.parent.parent) != path_key(folder) or not re.fullmatch(r'[0-9a-f]{32}', path.parent.name)
             or path.name != saved['name'] or path.suffix.lower() not in ('.pdf', '.docx')):
         raise ValueError('简历文件路径无效，请重新导入')
     return saved
@@ -342,7 +343,8 @@ def extract_resume_profile(store):
     source = _verified_resume(store)
     result = extract_profile(source)
     saved = get_resume(store)
-    if not saved or result['source_file'] != saved['path'] or result['source_sha256'] != saved['sha256']:
+    if (not saved or path_key(result['source_file']) != path_key(Path(saved['path']).resolve())
+            or result['source_sha256'] != saved['sha256']):
         raise ValueError('简历已变更，请重新读取后核对')
     return result
 

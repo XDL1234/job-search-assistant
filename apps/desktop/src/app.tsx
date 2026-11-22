@@ -2,13 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { BriefcaseBusiness, ChevronRight, ClipboardCheck, FileText, House, Minus, Send, Settings, Square, X } from "lucide-react";
-import { Button } from "./components/ui/button";
+import { BriefcaseBusiness, Cable, ChevronRight, ClipboardCheck, ContactRound, FileText, FileUser, House, MessagesSquare, Minus, Send, Square, X } from "lucide-react";
 import { native, request } from "./bridge";
 import packageInfo from "../package.json";
 import { TaskSetup } from "./pages/TaskSetup";
 import { Inbox, attentionCategory } from "./pages/Inbox";
-import { SettingsPage, ConnectionDiagnostics, type SettingsTab, type BrowserDiagnostic } from "./pages/SettingsPage";
+import { SettingsContent, ConnectionDiagnostics, type BrowserDiagnostic } from "./pages/SettingsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { Records } from "./pages/Records";
 import { Overview, type OverviewCategory } from "./pages/Overview";
@@ -16,19 +15,25 @@ import { Workbench, type ExecutionLine } from "./pages/Workbench";
 import { isActiveRun } from "./workspace";
 import type { BrowserState, Connection, ExecutorEvent, Run, Snapshot } from "./contracts";
 
+const profileNavigation = [
+  ["resume", "简历", FileUser],
+  ["profile", "个人信息", ContactRound],
+  ["replies", "回复规则", MessagesSquare],
+  ["connections", "连接与诊断", Cable],
+] as const;
 const navigation = [
   ["home", "总览", House],
   ["tasks", "投递任务", Send],
   ["inbox", "待办", ClipboardCheck],
   ["history", "投递记录", FileText],
+  ...profileNavigation,
 ] as const;
-type Page = (typeof navigation)[number][0] | "settings" | "boss" | "companies" | "running";
+type Page = (typeof navigation)[number][0] | "boss" | "companies" | "running";
 const empty: Snapshot = { runs: [], attempts: [], attention: [], fields: [], evidence: [], frame: null };
 const taskPages = new Set<Page>(["tasks", "boss", "companies", "running"]);
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("profile");
   const [todoCategory, setTodoCategory] = useState<OverviewCategory>();
   const [snapshot, setSnapshot] = useState<Snapshot>(empty);
   const [connection, setConnection] = useState<Connection>({
@@ -45,7 +50,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [preview, setPreview] = useState<{ ticket: string } | null>(null);
   const [image, setImage] = useState("");
   const [savedFrame, setSavedFrame] = useState<{ id: string; url: string }>();
   const [messages, setMessages] = useState<ExecutionLine[]>([]);
@@ -54,11 +58,13 @@ export default function App() {
   const run = snapshot.runs.find((value) => value.id === runId);
   const frameId = page === "running" && snapshot.frame?.run_id === runId ? snapshot.frame?.id : undefined;
   const browserInUse = snapshot.runs.some(isActiveRun);
-  const browserReady = Boolean(browser.connected && browser.pinned_target);
+  const browserReady = Boolean(browser.connected && !browser.connecting && browser.pinned_target);
   const refresh = useCallback(async () => {
     if (!isTauri()) return;
     try {
-      setSnapshot(await request<Snapshot>("snapshot", { run_id: runId }));
+      const current = await request<Snapshot>("snapshot", { run_id: runId });
+      setSnapshot(current);
+      setStartingRun((id) => id && current.runs.some((row) => row.id === id && isActiveRun(row)) ? "" : id);
     } catch (failure) {
       setError(String(failure));
     }
@@ -70,7 +76,7 @@ export default function App() {
   useEffect(loadResume, [loadResume]);
   useEffect(() => {
     scroller.current?.scrollTo(0, 0);
-  }, [page, runId, settingsTab]);
+  }, [page, runId]);
   useEffect(() => {
     void refresh();
     if (!isTauri()) return;
@@ -81,7 +87,7 @@ export default function App() {
         const row = { runId: id, text: String(payload.text), at: new Date().toISOString(), key: seq };
         setMessages((rows) => [...rows, row].slice(-300));
       }
-      if (type === "error" || type === "state" && payload.state !== "starting") {
+      if (type === "error" || type === "state" && !["starting", "running", "watching"].includes(String(payload.state))) {
         setStartingRun((current) => current === id ? "" : current);
       }
       if (type === "error") setRunProblem({ id, text: String(payload.message || "执行已暂停") });
@@ -95,10 +101,21 @@ export default function App() {
   useEffect(() => {
     if (!isTauri()) return;
     void native<Connection>("codex_status").then(setConnection).catch((failure) => setError(String(failure)));
-    void native<BrowserState>("browser_runtime_status").then(setBrowser).catch((failure) => setError(String(failure)));
     const subscription = listen<Connection>("codex-status", (event) => setConnection(event.payload));
     return () => { void subscription.then((unlisten) => unlisten()); };
   }, []);
+  useEffect(() => {
+    if (!desktop || busy) return;
+    let active = true;
+    const loadBrowser = () => {
+      void native<BrowserState>("browser_runtime_status").then((state) => {
+        if (active) setBrowser(state);
+      }).catch(() => undefined);
+    };
+    loadBrowser();
+    const timer = window.setInterval(loadBrowser, 1500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [desktop, busy]);
   useEffect(() => {
     if (!frameId) return;
     let active = true;
@@ -122,7 +139,6 @@ export default function App() {
     }
   };
   const navigate = (next: Page) => { setNotice(""); setError(""); setPage(next); };
-  const openSettings = (tab: SettingsTab) => { setSettingsTab(tab); navigate("settings"); };
   const openRun = (id: string) => { setEditingRun(undefined); setRunId(id); navigate("running"); };
   const openTask = (channel: "boss" | "web" = "boss") => {
     setEditingRun(undefined);
@@ -133,15 +149,6 @@ export default function App() {
     setEditingRun(run);
     navigate(run.config.channels.includes("boss") ? "boss" : "companies");
   };
-  const demo = () => perform(async () => setPreview(await request<{ ticket: string }>("preview_demo")));
-  const confirmDemo = () => perform(async () => {
-    if (!preview) return;
-    const created = await request<{ run_id: string }>("start_run", { ticket: preview.ticket, confirmed: true });
-    setPreview(null);
-    openRun(created.run_id);
-    await request("open_simulation", { run_id: created.run_id });
-    setNotice("模拟页面已打开。点击开始后有 5 秒切换时间，请将模拟浏览器置于前台。");
-  });
   const control = (action: string) => perform(async () => {
     setStartingRun(action === "running" || action === "watching" ? runId : "");
     setRunProblem(undefined);
@@ -156,8 +163,19 @@ export default function App() {
     const path = await native<string | null>("export_records_dialog");
     if (path) setNotice(`记录已导出：${path}`);
   });
+  const connectChrome = () => perform(async () => {
+    setDiagnostic(undefined);
+    setBrowser((current) => ({ ...current, connecting: true, connection_error: null }));
+    try {
+      setBrowser(await native<BrowserState>("browser_connect"));
+    } catch (failure) {
+      setBrowser((current) => ({ ...current, connecting: false }));
+      throw failure;
+    }
+  });
   const selectedNav = taskPages.has(page) ? "tasks" : page;
-  const title = page === "settings" ? "设置" : navigation.find((item) => item[0] === selectedNav)?.[1];
+  const title = navigation.find(([key]) => key === selectedNav)?.[1];
+  const profilePage = profileNavigation.find(([key]) => key === page);
   const subTitle = editingRun && (page === "boss" || page === "companies") ? "编辑任务"
     : ({ boss: "BOSS 新建投递", companies: "公司网申", running: "执行工作台" } as Partial<Record<Page, string>>)[page];
   const attentionCount = snapshot.attention.filter((row) => !row.resolved).length;
@@ -177,8 +195,6 @@ export default function App() {
           <Icon size={21} /><span>{label}</span>{key === "inbox" && attentionCount > 0 && <b aria-label={`${attentionCount} 项未处理`}>{attentionCount}</b>}
         </button>)}
       </nav>
-      <div className="sidebar-bottom"><button className={`nav-item ${page === "settings" ? "selected" : ""}`}
-        aria-current={page === "settings" ? "page" : undefined} onClick={() => openSettings("profile")}><Settings size={21} />设置</button></div>
     </aside>
     <main>
       <div className="workspace-topbar" data-tauri-drag-region>
@@ -187,8 +203,8 @@ export default function App() {
           {subTitle && <><ChevronRight size={15} /><strong>{subTitle}</strong></>}
         </div>
         <div className="workspace-top-actions">
-          <button onClick={() => openSettings("connections")}><i className={`connection-dot ${browser.connected ? "connected" : ""}`} />Chrome {browser.connected ? "已连接" : "未连接"}</button>
-          <button onClick={() => openSettings("connections")}><i className={`connection-dot ${connection.state === "ready" ? "connected" : ""}`} />Codex {connection.state === "ready" ? "已连接" : connection.state === "connecting" ? "连接中" : "未连接"}</button>
+          <button onClick={() => navigate("connections")}><i className={`connection-dot ${browser.connected && !browser.connecting ? "connected" : ""}`} />Chrome {browser.connecting ? "连接中" : browser.connected ? "已连接" : "未连接"}</button>
+          <button onClick={() => navigate("connections")}><i className={`connection-dot ${connection.state === "ready" ? "connected" : ""}`} />Codex {connection.state === "ready" ? "已连接" : connection.state === "connecting" ? "连接中" : "未连接"}</button>
           {desktop && <div className="workspace-window-controls">
             <button aria-label="最小化" onClick={() => windowControl("minimize")}><Minus size={17} /></button>
             <button aria-label="最大化或还原" onClick={() => windowControl("toggleMaximize")}><Square size={13} /></button>
@@ -202,12 +218,12 @@ export default function App() {
         {notice && <div className="banner" role="status">{notice}</div>}
         {page === "home" && <Overview snapshot={snapshot} resumeReady={resumeReady} classify={attentionCategory}
           onNew={openTask} onRun={openRun} onTodo={(category) => { setTodoCategory(category); navigate("inbox"); }}
-          onRecords={() => navigate("history")} onResume={() => openSettings("resume")} />}
+          onRecords={() => navigate("history")} onResume={() => navigate("resume")} />}
         {page === "tasks" && <TasksPage snapshot={snapshot} onNew={openTask} onOpen={openRun} />}
         {(page === "boss" || page === "companies") && <TaskSetup key={`${page}:${editingRun?.id ?? "new"}`} channel={page === "boss" ? "boss" : "web"}
           initialRun={editingRun} latestRun={snapshot.runs.find((item) => !item.config.simulation && item.config.channels.includes(page === "boss" ? "boss" : "web"))}
           onSwitchChannel={openTask} onBack={() => editingRun ? openRun(editingRun.id) : navigate("tasks")}
-          browserReady={browserReady} codexReady={connection.state === "ready"} onMaterials={openSettings}
+          browserReady={browserReady} codexReady={connection.state === "ready"} onMaterials={navigate}
           onCreated={(id) => { setRunProblem(undefined); openRun(id); void refresh(); }} />}
         {page === "running" && <Workbench key={runId} run={run} snapshot={snapshot} messages={messages} busy={busy}
           starting={Boolean(run && startingRun === run.id && !isActiveRun(run))}
@@ -219,56 +235,22 @@ export default function App() {
           onBack={() => navigate("tasks")} onControl={(action) => void control(action)}
           onEdit={run && !run.config.simulation ? editTask : undefined}
           onWatch={run && !run.config.simulation && ["paused", "completed"].includes(run.status) ? () => void control("watching") : undefined}
-          onBrowserSetup={() => run?.config.simulation ? void perform(async () => { await request("open_simulation", { run_id: runId }); }) : openSettings("connections")}
+          onBrowserSetup={() => run?.config.simulation ? void perform(async () => { await request("open_simulation", { run_id: runId }); }) : navigate("connections")}
           onImage={(kind, identity) => void perform(async () => { setImage((await request<{ url: string }>("read_image", { kind, identity })).url); })} />}
         {page === "history" && <Records snapshot={snapshot} onExport={exportRecords} exporting={busy} />}
         {page === "inbox" && <Inbox key={todoCategory ?? "all"} snapshot={snapshot} onChanged={refresh} initialCategory={todoCategory} />}
-        {page === "settings" && <><header className="workspace-title"><h1>设置</h1></header><SettingsPage active={settingsTab} onTabChange={setSettingsTab} onSaved={async () => { loadResume(); await refresh(); }}
+        {profilePage && <><header className="workspace-title"><h1>{profilePage[1]}</h1></header><SettingsContent active={profilePage[0]} onProfile={() => navigate("profile")} onSaved={async () => { loadResume(); await refresh(); }}
           diagnostics={<ConnectionDiagnostics browser={browser} connection={connection} busy={busy} browserInUse={browserInUse} desktop={desktop}
             diagnostic={diagnostic}
-            onConnectChrome={() => void perform(async () => { setDiagnostic(undefined); setBrowser(await native<BrowserState>("browser_connect")); })}
+            onConnectChrome={() => void connectChrome()}
+            onRefreshTabs={() => void perform(async () => { setDiagnostic(undefined); setBrowser(await native<BrowserState>("browser_refresh_tabs")); })}
             onSelectTab={(targetId) => void perform(async () => { setDiagnostic(undefined); setBrowser(await native<BrowserState>("browser_select_tab", { targetId })); })}
             onInspect={() => void perform(async () => setDiagnostic(await native<BrowserDiagnostic>("browser_inspect")))}
-            onConnectCodex={() => void perform(async () => setConnection(await native<Connection>("codex_connect")))}
-            onLogin={() => void perform(async () => setConnection(await native<Connection>("codex_login")))}
-            onDemo={() => void demo()} />} /></>}
+            onConnectCodex={(reuseLogin) => void perform(async () => setConnection(await native<Connection>("codex_connect", { reuseLogin: reuseLogin ?? false })))}
+            onCancelLogin={() => void perform(async () => setConnection(await native<Connection>("codex_cancel_login")))}
+            onLogin={() => void perform(async () => setConnection(await native<Connection>("codex_login")))} />} /></>}
       </div></div>
     </main>
-      {preview && (
-        <div className="modal-backdrop">
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="confirm-title"
-          >
-            <div className="section-title">
-              <h2 id="confirm-title">确认本轮模拟任务</h2>
-              <button aria-label="关闭" onClick={() => setPreview(null)}>
-                <X />
-              </button>
-            </div>
-            <p>将使用虚构资料，在本地浏览器页面验证以下流程：</p>
-            <ul>
-              <li>填写姓名、邮箱与项目经历，截图留档</li>
-              <li>提交模拟申请，核验页面回执</li>
-              <li>触发一次模拟 BOSS 沟通，上限 1 次</li>
-              <li>识别面试邀约并生成待办</li>
-            </ul>
-            <div className="banner">
-              会控制鼠标和键盘。登录招聘网站、真实投递和发送真实消息均不在本轮范围内。
-            </div>
-            <div className="actions end">
-              <Button variant="secondary" onClick={() => setPreview(null)}>
-                取消
-              </Button>
-              <Button disabled={busy} onClick={() => void confirmDemo()}>
-                确认范围，创建任务
-              </Button>
-            </div>
-          </section>
-        </div>
-      )}
       {image && <div className="modal-backdrop image-modal" role="dialog" aria-modal="true" aria-label="截图预览">
         <button className="image-close" aria-label="关闭图片" onClick={() => setImage("")}><X /></button>
         <img src={image} alt="申请截图证据" />

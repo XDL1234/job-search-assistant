@@ -3,7 +3,6 @@ export type UiMethod =
   | "snapshot"
   | "export_records"
   | "read_image"
-  | "preview_demo"
   | "start_run"
   | "control_run"
   | "open_simulation"
@@ -49,6 +48,7 @@ export interface JobPreferences {
   boss_filters: BossFilters;
 }
 export interface TaskConfig {
+  web_submit?: boolean;
   channels: string[];
   target_roles: string[];
   employment_type: string;
@@ -61,7 +61,7 @@ export interface TaskConfig {
   window_title: string;
   company_table?: string;
   reviewed_company_table_sha256?: string;
-  company_rows?: { company: string; url: string; source_row: number }[];
+  company_rows?: { company: string; url: string; job?: string; source_row: number }[];
   resume_path?: string;
   profile_version?: string;
 }
@@ -81,6 +81,7 @@ export interface Run {
   config: {
     target_roles: string[];
     channels: string[];
+    web_submit?: boolean;
     simulation?: boolean;
     execution_mode?: string;
     employment_type?: string;
@@ -180,6 +181,8 @@ export interface ExecutorEvent {
 
 export interface BrowserState {
   connected: boolean;
+  connecting?: boolean;
+  connection_error?: string | null;
   installed?: boolean;
   pinned_target?: string | null;
   url?: string | null;

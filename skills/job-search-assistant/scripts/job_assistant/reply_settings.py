@@ -13,6 +13,9 @@ def read_settings(store):
 def save_settings(store,value):
     if value.get('unknown_reply_mode') not in ('human','ai') or not isinstance(value.get('rules'),list):
         raise ValueError('请选择未匹配问题的处理方式，并提供规则列表')
+    instructions=value.get('ai_instructions','')
+    if not isinstance(instructions,str) or len(instructions)>4000:
+        raise ValueError('AI 回复规则应为文本，最多 4000 字')
     if len(value['rules'])>50:
         raise ValueError('回复规则最多 50 条')
     identities=set()
@@ -29,6 +32,8 @@ def save_settings(store,value):
         if rule.get('category') in ('salary','location') and not rule['when'] and rule.get('enabled',True):
             raise ValueError('薪资和地点规则启用前必须设置匹配条件')
     saved={'rules':value['rules'],'unknown_reply_mode':value['unknown_reply_mode']}
+    if instructions.strip():
+        saved['ai_instructions']=instructions.strip()
     path=store.root/('reply-settings-'+uuid.uuid4().hex+'.tmp')
     path.write_text(json.dumps(saved,ensure_ascii=False,indent=2),encoding='utf-8')
     path.replace(store.root/'reply-settings.json')

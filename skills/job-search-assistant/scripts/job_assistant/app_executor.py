@@ -3,7 +3,7 @@ import base64
 import json
 from pathlib import Path
 
-from .app_runs import app_session
+from .app_runs import app_session, MANUAL_WEB_PROFILE_FIELDS
 from .cli import dispatch, read_profile, verify_materials
 from .panel_state import check_fresh_frame
 
@@ -19,6 +19,8 @@ def _web_field_value(config, source):
     parts = source.split('.')[1:]
     if parts[0] in ('sources', 'resume_text'):
         raise ValueError('请使用已保存的具体个人信息字段')
+    if parts[0] in MANUAL_WEB_PROFILE_FIELDS:
+        raise ValueError('证件类型、其他证件号码和证明附件需要手动处理')
     value = read_profile(config)
     for part in parts:
         if isinstance(value, dict):

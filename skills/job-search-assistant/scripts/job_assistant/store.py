@@ -276,12 +276,12 @@ class Store:
         rows = [dict(row) for row in self.conn.execute('SELECT * FROM fields WHERE attempt_id=? ORDER BY name', (attempt_id,))]
         return hashlib.sha256(packed(rows).encode()).hexdigest()
 
-    def prepare_action(self, run_id, attempt_id, kind, recipient, payload):
+    def prepare_action(self, run_id, attempt_id, kind, recipient, payload, *, native_web=False):
         with self.conn:
             self.conn.execute('BEGIN IMMEDIATE')
-            return self._prepare_action(run_id, attempt_id, kind, recipient, dict(payload))
+            return self._prepare_action(run_id, attempt_id, kind, recipient, dict(payload), native_web=native_web)
 
-    def _prepare_action(self, run_id, attempt_id, kind, recipient, payload, manual=False):
+    def _prepare_action(self, run_id, attempt_id, kind, recipient, payload, manual=False, native_web=False):
         if kind not in ('greet', 'submit', 'reply', 'resume'):
             raise ValueError('无效行动类型')
         config = self.check_run(run_id, kind)
@@ -292,6 +292,10 @@ class Store:
             raise ValueError('接收方不能为空')
         if (kind == 'submit') != (attempt['channel'] == 'web'):
             raise ValueError('行动类型与渠道不符')
+        payload.pop('native_web_receipt', None)
+        if native_web and (kind != 'submit' or config.get('web_submit') is not True
+                           or not attempt['job_key'].startswith('company-web:job:')):
+            raise ValueError('本轮未授权原生网申提交')
         conversation = self.conn.execute('SELECT * FROM conversations WHERE id=?', (recipient,)).fetchone()
         if conversation and conversation['status'] == 'human' and not manual:
             raise ValueError('会话已转人工，请等待用户接管')
@@ -300,13 +304,16 @@ class Store:
             if used >= config.get('max_contacts', 0):
                 raise ValueError('已达到本轮沟通数量上限')
         if kind == 'submit':
-            fields = self.conn.execute('SELECT evidence_id FROM fields WHERE attempt_id=?', (attempt_id,)).fetchall()
-            if not fields or any(not f[0] for f in fields):
-                raise ValueError('填写字段截图证据不完整')
-            for field in fields:
-                self.check_evidence(field[0], attempt_id)
-            if self.check_evidence(payload.get('pre_submit_evidence', ''), attempt_id)['kind'] != 'pre_submit':
-                raise ValueError('必须使用提交前复核截图')
+            if native_web:
+                payload['native_web_receipt'] = True
+            else:
+                fields = self.conn.execute('SELECT evidence_id FROM fields WHERE attempt_id=?', (attempt_id,)).fetchall()
+                if not fields or any(not f[0] for f in fields):
+                    raise ValueError('填写字段截图证据不完整')
+                for field in fields:
+                    self.check_evidence(field[0], attempt_id)
+                if self.check_evidence(payload.get('pre_submit_evidence', ''), attempt_id)['kind'] != 'pre_submit':
+                    raise ValueError('必须使用提交前复核截图')
             payload['field_fingerprint'] = self.field_fingerprint(attempt_id)
         if kind == 'resume':
             if payload.get('requested') is not True or not payload.get('resume_sha256'):
@@ -352,7 +359,7 @@ class Store:
         return bool(row and row['expires'] > time.time() and action['kind'] == 'reply'
                     and row['payload_hash'] == hashlib.sha256(action['payload'].encode()).hexdigest())
 
-    def claim_action(self, run_id, action_id):
+    def claim_action(self, run_id, action_id, *, native_web=False):
         with self.conn:
             self.conn.execute('BEGIN IMMEDIATE')
             action = self.one('actions', action_id)
@@ -363,11 +370,14 @@ class Store:
             if self.conn.execute('SELECT 1 FROM manual_sends WHERE action_id=?', (action_id,)).fetchone() and not self.manual_send_allowed(action):
                 raise ValueError('人工发送确认已过期或正文已变化，请重新复核')
             if action['kind'] == 'submit':
+                if native_web != (payload.get('native_web_receipt') is True):
+                    raise ValueError('本次提交只能由对应的网申执行入口领取')
                 if payload.get('field_fingerprint') != self.field_fingerprint(action['attempt_id']):
-                    raise ValueError('填写字段已变化，必须取消未执行行动并重新复核截图')
-                self.check_evidence(payload['pre_submit_evidence'], action['attempt_id'])
-                for field in self.conn.execute('SELECT evidence_id FROM fields WHERE attempt_id=?', (action['attempt_id'],)):
-                    self.check_evidence(field[0], action['attempt_id'])
+                    raise ValueError('填写字段已变化，必须取消未执行行动并重新复核')
+                if not native_web:
+                    self.check_evidence(payload['pre_submit_evidence'], action['attempt_id'])
+                    for field in self.conn.execute('SELECT evidence_id FROM fields WHERE attempt_id=?', (action['attempt_id'],)):
+                        self.check_evidence(field[0], action['attempt_id'])
             if action['kind'] in ('reply', 'resume'):
                 state = self.one('conversations', action['recipient'])
                 if (state['status'] == 'human' and not self.manual_send_allowed(action)) or state['latest_message'] != payload['message_key']:
@@ -375,21 +385,27 @@ class Store:
             self.conn.execute("UPDATE actions SET status='executing',updated=? WHERE id=?", (now(), action_id))
         return action
 
-    def finish_action(self, action_id, status, evidence_id=None, reason=''):
+    def finish_action(self, action_id, status, evidence_id=None, reason='', *, native_web=False):
         action = self.one('actions', action_id)
         if status not in ('succeeded', 'uncertain', 'not_done'):
             raise ValueError('结果只能为 succeeded、uncertain 或 not_done')
         if action['status'] == 'succeeded':
             raise ValueError('已成功的行动不能覆盖')
+        if native_web and (action['kind'] != 'submit' or status == 'not_done'
+                           or json.loads(action['payload']).get('native_web_receipt') is not True):
+            raise ValueError('提交回执必须属于本次原生网申')
         if status in ('succeeded', 'not_done'):
             if not reason.strip():
                 raise ValueError('必须说明页面上核验到的凭据')
-            evidence = self.check_evidence(evidence_id or '', action['attempt_id'])
-            if evidence['kind'] not in ('result', 'failure', 'verification'):
-                raise ValueError('必须使用结果或核查截图，不能用提交前图片证明成功')
+            if not native_web:
+                evidence = self.check_evidence(evidence_id or '', action['attempt_id'])
+                if evidence['kind'] not in ('result', 'failure', 'verification'):
+                    raise ValueError('必须使用结果或核查截图，不能用提交前图片证明成功')
         with self.conn:
-            self.conn.execute('UPDATE actions SET status=?,evidence_id=?,reason=?,updated=? WHERE id=?',
-                              (status, evidence_id, reason, now(), action_id))
+            changed = self.conn.execute('''UPDATE actions SET status=?,evidence_id=?,reason=?,updated=?
+                WHERE id=? AND (NOT ? OR status='executing')''', (status, evidence_id, reason, now(), action_id, native_web))
+            if changed.rowcount != 1:
+                raise ValueError('须先实际执行提交，且结果尚未记录')
             if action['kind'] in ('submit', 'greet') or status == 'uncertain':
                 state = {'succeeded': 'success', 'uncertain': 'uncertain', 'not_done': 'in_progress'}[status]
                 self.conn.execute('UPDATE attempts SET status=?,reason=?,updated=? WHERE id=?',
@@ -399,10 +415,11 @@ class Store:
         return {table: [dict(r) for r in self.conn.execute(f'SELECT * FROM {table}')]
                 for table in ('runs', 'attempts', 'fields', 'actions', 'conversations', 'attention', 'evidence')}
 
-    def export(self, destination=None):
+    def export(self, destination=None, *, evidence_directory=None):
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill
         destination = Path(destination or self.root / 'results.xlsx').resolve()
+        evidence_directory = Path(evidence_directory or self.root / 'evidence')
         book = Workbook()
         book.remove(book.active)
         data = self.snapshot()
@@ -422,7 +439,7 @@ class Store:
             for record in records:
                 values = [record.get(k, '') for k in columns]
                 if columns[-1] == '截图目录':
-                    values[-1] = str(self.root / 'evidence' / record['id'])
+                    values[-1] = str(evidence_directory / record['id'])
                 page.append(values)
                 for cell in page[page.max_row]:
                     if isinstance(cell.value, str):

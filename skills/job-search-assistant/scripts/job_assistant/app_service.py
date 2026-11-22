@@ -126,6 +126,16 @@ def handle_app_request(store, request):
                 result = executor_action(store, params['run_id'], params['request'])
             finally:
                 store.request_generation = None
+        elif method == 'company_web':
+            from .app_decisions import check_generation
+            from .company_web import company_web
+            run_id, generation = params['run_id'], params.get('control_generation')
+            check_generation(store, run_id, generation)
+            store.request_generation = (run_id, generation)
+            try:
+                result = company_web(store, run_id, params['request'])
+            finally:
+                store.request_generation = None
         elif method == 'script_step':
             from .boss_script import script_step
             result = script_step(store, params['run_id'])
@@ -201,6 +211,9 @@ def handle_app_request(store, request):
         elif method == 'browser_inspect':
             from .agent_browser import inspect_page
             result=inspect_page(store.root,params.get('scope','auto'),params.get('expected_target'))
+        elif method == 'prepare_web_autofill':
+            from .web_autofill import prepare_web_autofill
+            result = prepare_web_autofill(store, params['fields'])
         elif method in ('get_reply_settings','save_reply_settings','preview_reply'):
             from . import reply_settings
             if method=='get_reply_settings':result=reply_settings.read_settings(store)

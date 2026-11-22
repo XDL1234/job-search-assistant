@@ -18,7 +18,8 @@ BROWSERS = {'chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe'}
 def desktop_lock(root):
     """不同命令进程共享同一桌面锁；暂停命令不依赖此锁。"""
     # 不同数据目录仍共用同一用户桌面，锁不能跟随 --root 分裂。
-    path = Path(tempfile.gettempdir()) / 'job-search-assistant-desktop.lock'
+    shared_path = os.environ.get('JOB_ASSISTANT_DESKTOP_LOCK_PATH') if os.environ.get('JOB_ASSISTANT_EMBEDDED') == '1' else None
+    path = Path(shared_path) if shared_path else Path(tempfile.gettempdir()) / 'job-search-assistant-desktop.lock'
     with path.open('a+b') as handle:
         handle.seek(0)
         if os.name == 'nt':

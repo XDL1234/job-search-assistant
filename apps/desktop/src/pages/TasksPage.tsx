@@ -178,7 +178,8 @@ export function TasksPage({ snapshot, onNew, onOpen }: {
           {tabs.map(([value, label]) => <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}>{label} <span>{counts[value]}</span></button>)}
         </div>
         <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
-          <option value="all">全部渠道</option><option value="boss">BOSS 直聘</option><option value="web">公司网申</option><option value="simulation">本地演示</option>
+          <option value="all">全部渠道</option><option value="boss">BOSS 直聘</option><option value="web">公司网申</option>
+          {snapshot.runs.some((run) => run.config.simulation) && <option value="simulation">本地演示</option>}
         </select>
       </div>
     <div className="task-table-wrap">

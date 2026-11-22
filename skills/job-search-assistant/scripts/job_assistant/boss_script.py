@@ -6,12 +6,22 @@ import json
 import re
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from .city_filter import city_match
 
 
+VERIFICATION_TITLE = re.compile(r'^(?:安全验证|人机验证|滑块验证|验证码|异常访问|访问受限|操作过于频繁)[。！!]?$')
+VERIFICATION_PROMPT = re.compile(
+    r'^(?:请(?:您)?(?:先)?(?:完成(?:安全|人机|滑块)?验证(?:后(?:继续(?:访问)?|访问|重试))?'
+    r'|输入(?:手机|短信|图形)?验证码)|(?:请(?:您)?(?:先)?)?(?:向右)?(?:拖动|拖拽|滑动)滑块(?:完成验证)?'
+    r'|(?:系统)?检测到(?:您|您的)?(?:存在)?异常访问|(?:系统检测到)?(?:您的?)?(?:访问受限|操作过于频繁))'
+    r'(?:[，,][ \t]*请(?:稍后(?:再试|重试)|完成(?:安全|人机)?验证))?[。！!]?$'
+)
+
+
 def blocking_page(text, *, include_interview=True):
-    if re.search(r'安全验证|滑块|验证码|异常访问|操作过于频繁|访问受限', text):
+    if VERIFICATION_TITLE.fullmatch(text.strip()) or any(VERIFICATION_PROMPT.fullmatch(line.strip()) for line in text.splitlines()):
         return '平台要求验证或限制访问，请人工处理'
     if re.search(r'扫码登录|登录后查看|请先登录', text):
         return '请先在浏览器完成登录'
@@ -113,26 +123,46 @@ def save_frame(store, run_id, result):
     result['frame'] = frame
 
 
+class GreetNotSent(ValueError):
+    """当前岗位明确不再需要或允许发起沟通。"""
+
+
 def greet(store, run_id, attempt_id, action_id, observation_id=None, expected_target=None):
     from .agent_browser import browser_call, action_check, check_current_source
     from .cli import verify_materials
+    from .store import now
     config = verify_materials(store, run_id)
     if 'boss' not in config['channels']:
         raise ValueError('本轮未授权 BOSS 沟通')
     attempt = store.one('attempts', attempt_id)
     action = store.one('actions', action_id)
-    if attempt['channel'] != 'boss' or action['kind'] != 'greet' or action['attempt_id'] != attempt_id:
+    if attempt['channel'] != 'boss' or action['kind'] != 'greet' or action['attempt_id'] != attempt_id or action['run_id'] != run_id:
         raise ValueError('沟通动作与本轮申请不一致')
-    check_current_source(store.root,run_id,config,attempt['job_key'])
-    store.claim_action(run_id, action_id)
+    claimed = False
+
+    def claim():
+        nonlocal claimed
+        store.claim_action(run_id, action_id)
+        claimed = True
+
     try:
+        check_current_source(store.root,run_id,config,attempt['job_key'])
         params = {'url':attempt['url'], 'action_id':action_id}
         if observation_id:
             params['observation_id']=observation_id
         if expected_target:
             params['expected_target']=expected_target
-        result = browser_call(store.root, 'greet', run_id,
-                              check=action_check(store,run_id,'greet',params), **params)
+        def check():
+            action_check(store, run_id, 'greet', params, status='executing' if claimed else 'pending')()
+
+        result = browser_call(store.root, 'greet', run_id, check=check, claim_greet=claim, **params)
+        if not claimed:
+            if result.get('not_done') is True:
+                save_frame(store, run_id, result)
+                evidence = store.evidence(attempt_id, result['frame']['path'], 'verification')
+                store.finish_action(action_id, 'not_done', evidence, result['reason'])
+                raise GreetNotSent(result['reason'])
+            raise ValueError('未执行本次沟通，无法登记发送结果')
         save_frame(store, run_id, result)
         evidence = store.evidence(attempt_id,result['frame']['path'],'result')
         if result.get('sent') is True:
@@ -144,13 +174,17 @@ def greet(store, run_id, attempt_id, action_id, observation_id=None, expected_ta
             raise ValueError('沟通结果不明，已标记待核查，禁止重发')
         return result
     except Exception as error:
-        if store.one('actions',action_id)['status']=='executing':
+        if claimed and store.one('actions',action_id)['status']=='executing':
             store.finish_action(action_id,'uncertain',reason=str(error))
+        elif not claimed:
+            with store.conn:
+                store.conn.execute("UPDATE actions SET status='not_done',reason=?,updated=? WHERE id=? AND status='pending'",
+                                   (str(error), now(), action_id))
         raise
 
 
 def script_step(store, run_id):
-    from .app_runs import app_session
+    from .app_runs import app_session, reset_unsent_attempts
     from .cli import verify_materials
     from .desktop import desktop_lock
     app_session(store, run_id)
@@ -220,21 +254,42 @@ def script_step(store, run_id):
             if used >= config['max_contacts']:
                 raise ValueError('沟通上限已用完，请编辑任务后再继续')
             observed=browser('observe')
-            if (observed.get('heading') and choose_card([{**card,'job':observed['heading']}],config) is None
-                    or observed.get('detail_contacted')):
-                reason='岗位已沟通或发送前条件已变化，已跳过'
-                store.set_attempt(attempt,'skipped',reason)
-                state.setdefault('stale_keys',[]).append(card['key'])
-                return_to_list()
-                return {'done':False,'message':reason}
-            store.evidence(attempt,observed['frame']['path'],'pre_submit')
-            action=store.prepare_action(run_id,attempt,'greet',card.get('recruiter') or card['key'],{})
-            greet(store,run_id,attempt,action,observation_id=observed.get('observation_id'),expected_target=state['target'])
+            if urlsplit(observed.get('url','')).path != urlsplit(card['url']).path:
+                raise ValueError('当前页面已离开本轮目标岗位，请回到原岗位后恢复，未发送')
+            greeting = observed.get('detail_greet_state')
+            if greeting == 'unavailable':
+                reason = '岗位已停止招聘，已跳过'
+            elif greeting == 'contacted' or observed.get('detail_contacted'):
+                reason = '岗位已沟通，已跳过'
+            elif not observed.get('heading') or greeting != 'ready':
+                raise ValueError('未能核对当前岗位和唯一沟通按钮，任务已暂停，未发送')
+            elif choose_card([{**card,'job':observed['heading']}],config) is None:
+                reason = '发送前岗位条件已变化，已跳过'
+            else:
+                store.evidence(attempt,observed['frame']['path'],'pre_submit')
+                action=store.prepare_action(run_id,attempt,'greet',card.get('recruiter') or card['key'],{})
+                try:
+                    greet(store,run_id,attempt,action,observation_id=observed.get('observation_id'),expected_target=state['target'])
+                except GreetNotSent as error:
+                    reason = str(error)
+                else:
+                    return_to_list()
+                    return {'done':False,'message':f"已沟通：{card['company']} · {card['job']}"}
+            store.evidence(attempt,observed['frame']['path'],'verification')
+            store.set_attempt(attempt,'skipped',reason)
+            state.setdefault('stale_keys',[]).append(card['key'])
             return_to_list()
-            return {'done':False,'message':f"已沟通：{card['company']} · {card['job']}"}
+            return {'done':False,'message':reason}
         if state['phase']=='return':
             return_to_list()
             return {'done':False,'message':'已返回原筛选列表'}
+        # 列表阶段没有正在打开的候选，未登记动作的旧记录可以重新筛选。
+        with store.conn:
+            before = store.conn.total_changes
+            reset_unsent_attempts(store, run_id, '候选留档或进度保存中断，尚未发送，恢复后重新核对')
+            if state['phase'] == 'next' and store.conn.total_changes != before:
+                state['phase'] = 'list'
+                save()
         operation = 'next' if state['phase']=='next' else 'observe'
         observation = browser(operation)
         blocked = blocking_page(observation.get('text',''), include_interview=False)

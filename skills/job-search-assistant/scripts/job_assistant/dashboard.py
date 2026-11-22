@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .bootstrap import SKILL_ROOT
+from .inputs import path_key
 from .panel_state import pending_notes, queue_control
 from .store import Store, now
 
@@ -145,13 +146,14 @@ class Dashboard:
             directory = self.root / 'frames'
         elif kind == 'evidence':
             item = store.one('evidence', identity)
-            store.check_evidence(identity, item['attempt_id'])
             path = Path(item['path'])
             directory = self.root / 'evidence'
         else:
             raise ValueError('未知图片类型')
-        if not path.resolve().is_relative_to(directory) or path.is_symlink():
+        if not path_key(path.resolve()).is_relative_to(path_key(directory)) or path.is_symlink():
             raise ValueError('图片路径不在记录目录内')
+        if kind == 'evidence':
+            store.check_evidence(identity, item['attempt_id'])
         return path.read_bytes()
 
 

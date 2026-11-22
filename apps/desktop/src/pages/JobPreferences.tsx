@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, X } from "lucide-react";
 import { native, request } from "../bridge";
 import { Button } from "../components/ui/button";
 import type { BossFilters, EmploymentType, JobPreferences } from "../contracts";
+import { CityPicker } from "./CityPicker";
+import { FilterCatalogPicker } from "./FilterCatalogPicker";
+import { industriesByGroup, positionPaths } from "./boss-catalog";
 import { rememberDraft, storedDraft } from "./task-draft";
 import "./task-pages.css";
 
@@ -31,14 +34,41 @@ const filterLabels = {
 type LabelField = keyof typeof filterLabels;
 const platformTypes: Record<string, string> = { internship: "实习", campus: "全职", full_time: "全职", part_time: "兼职", any: "不限" };
 
-const suggestions: Partial<Record<LabelField, string[]>> = {
-  city: ["北京", "上海", "广州", "深圳", "杭州", "天津", "西安", "苏州", "武汉", "厦门", "长沙", "成都", "重庆", "青岛", "南京"],
+const suggestions = {
   salary: ["不限", "3K以下", "3-5K", "5-10K", "10-20K", "20-50K", "50K以上"],
   experience: ["不限", "在校生", "应届生", "经验不限", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"],
   degree: ["不限", "初中及以下", "中专/中技", "高中", "大专", "本科", "硕士", "博士"],
   company_size: ["不限", "0-20人", "20-99人", "100-499人", "500-999人", "1000-9999人", "10000人以上"],
   financing: ["不限", "未融资", "天使轮", "A轮", "B轮", "C轮", "D轮及以上", "已上市", "不需要融资"],
 };
+type ChoiceField = keyof typeof suggestions;
+const positions = positionPaths.map((value) => ({ value, group: value[0], section: value.length === 3 ? value[1] : undefined }));
+const industries = Object.entries(industriesByGroup).flatMap(([group, labels]) => labels.map((label) => ({ group, value: [label] })));
+
+function FilterOptions({ label, options, value, onSelect, children, disabled = false }: {
+  label: string;
+  options: string[];
+  value?: string;
+  onSelect: (value: string) => void;
+  children: ReactNode;
+  disabled?: boolean;
+}) {
+  const [editing, setEditing] = useState<boolean>();
+  const expanded = editing ?? Boolean(value && !options.includes(value));
+  return <fieldset className="task-condition-row" disabled={disabled}>
+    <legend>{label}</legend>
+    <div className="task-filter-choices">
+      {options.map((option) => <button key={option} type="button" aria-pressed={value === option} onClick={() => {
+        onSelect(option);
+        setEditing(false);
+      }}>{option}</button>)}
+      {!disabled && <button type="button" aria-expanded={expanded} onClick={() => setEditing(!expanded)}>
+        自定义
+      </button>}
+    </div>
+    {expanded && children}
+  </fieldset>;
+}
 
 export const splitLabels = (input: string) =>
   input.split(/[、,，;；\n]/).map((value) => value.trim()).filter(Boolean);
@@ -72,8 +102,8 @@ export function BossFilterSummary({ filters, kind }: { filters: BossFilters; kin
 }
 
 type ConditionsDraft = {
-  kind: EmploymentType; roles: string; filters: BossFilters; positions: string;
-  industries: string; areaMode: "district" | "metro";
+  kind: EmploymentType; roles: string; filters: BossFilters; areaMode: "district" | "metro";
+  positions?: string; industries?: string;
 };
 const conditionsDraftKey = "job-assistant.job-conditions-draft.v1";
 
@@ -86,11 +116,11 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
   const drawer = useRef<HTMLDialogElement>(null);
   const [initial] = useState(initialPreferences);
   const [activeTab, setActiveTab] = useState<"basic" | "advanced">("basic");
+  const advancedId = useId();
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [kind, setKind] = useState<EmploymentType>("internship");
   const [roles, setRoles] = useState("");
   const [filters, setFilters] = useState<BossFilters>({});
-  const [positions, setPositions] = useState("");
-  const [industries, setIndustries] = useState("");
   const [areaMode, setAreaMode] = useState<"district" | "metro">("district");
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -103,8 +133,6 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
     setKind(value.employment_type);
     setRoles(value.target_roles.join("、"));
     setFilters(value.boss_filters);
-    setPositions((value.boss_filters.positions ?? []).map((path) => path.join(" > ")).join("\n"));
-    setIndustries((value.boss_filters.industries ?? []).join("、"));
     setAreaMode(value.boss_filters.metro_line ? "metro" : "district");
     setSaved(true);
     setDirty(false);
@@ -122,13 +150,16 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
       if (!active) return;
       if (value) load(value);
       const draft = localOnly ? undefined : storedDraft<ConditionsDraft>(conditionsDraftKey);
-      if (draft && draft.kind in employmentLabels && typeof draft.roles === "string" && draft.filters &&
-          typeof draft.positions === "string" && typeof draft.industries === "string") {
+      if (draft && draft.kind in employmentLabels && typeof draft.roles === "string" && draft.filters) {
+        const draftFilters = { ...draft.filters };
+        if (typeof draft.positions === "string") {
+          try { draftFilters.positions = parsePositionPaths(draft.positions); }
+          catch { setNotice("旧草稿中的职位分类格式有误，请核对已恢复的条件。"); }
+        }
+        if (typeof draft.industries === "string") draftFilters.industries = splitLabels(draft.industries);
         setKind(draft.kind);
         setRoles(draft.roles);
-        setFilters(draft.filters);
-        setPositions(draft.positions);
-        setIndustries(draft.industries);
+        setFilters(draftFilters);
         setAreaMode(draft.areaMode === "metro" ? "metro" : "district");
         setDirty(true);
       }
@@ -142,9 +173,9 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
 
   useEffect(() => {
     if (loaded && !localOnly) rememberDraft(conditionsDraftKey, dirty ? {
-      kind, roles, filters, positions, industries, areaMode,
+      kind, roles, filters, areaMode,
     } satisfies ConditionsDraft : undefined);
-  }, [loaded, localOnly, dirty, kind, roles, filters, positions, industries, areaMode]);
+  }, [loaded, localOnly, dirty, kind, roles, filters, areaMode]);
 
   const perform = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -161,35 +192,35 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
     setDirty(true);
   };
 
-  const field = (key: LabelField, placeholder: string, disabled = false) => {
-    const options = suggestions[key];
-    return <label key={key}>
-      {filterLabels[key]}
-      <input
-        value={key === "experience" && kind === "campus" ? "应届生" : filters[key] ?? ""}
-        placeholder={placeholder}
-        list={options && `boss-filter-${key}`}
-        disabled={disabled}
-        maxLength={key === "query" ? 100 : 60}
-        onChange={(event) => {
-          const next = event.target.value;
-          edit(() => setFilters((current) => ({
-            ...current,
-            ...(key === "city" ? { province: undefined, district: undefined, business_area: undefined, metro_line: undefined, metro_station: undefined } : {}),
-            ...(key === "district" ? { business_area: undefined } : {}),
-            ...(key === "metro_line" ? { metro_station: undefined } : {}),
-            [key]: next,
-          })));
-        }}
-      />
-      {options && <datalist id={`boss-filter-${key}`}>{options.map((value) => <option key={value} value={value} />)}</datalist>}
-    </label>;
-  };
-
+  const resetArea = { district: undefined, business_area: undefined, metro_line: undefined, metro_station: undefined };
   const hasCity = Boolean(filters.city?.trim());
   const hasParent = (value?: string) => Boolean(value?.trim() && value.trim() !== "不限");
+  const selectCity = (city?: string, province?: string) => {
+    if (city === filters.city && province === filters.province) return;
+    const changedArea = city?.replace(/市$/, "") !== filters.city?.replace(/市$/, "") || Boolean(filters.province &&
+      province?.replace(/省$/, "") !== filters.province.replace(/省$/, ""));
+    edit(() => setFilters((current) => ({ ...current, ...(changedArea ? resetArea : {}), city, province })));
+  };
+  const setFilter = (key: LabelField, value: string) => {
+    if ((filters[key] ?? "") === value) return;
+    edit(() => setFilters((current) => ({
+      ...current,
+      ...(key === "district" ? { business_area: undefined } : {}),
+      ...(key === "metro_line" ? { metro_station: undefined } : {}),
+      [key]: value,
+    })));
+  };
+  const field = (key: LabelField, placeholder: string, disabled = false, caption = filterLabels[key]) => <label>
+    {caption}
+    <input value={filters[key] ?? ""} placeholder={placeholder} disabled={disabled}
+      aria-label={caption !== filterLabels[key] ? filterLabels[key] : undefined}
+      maxLength={key === "query" ? 100 : 60} onChange={(event) => setFilter(key, event.target.value)} />
+  </label>;
+  const choices = (key: ChoiceField, disabled = false) => <FilterOptions label={filterLabels[key]} options={suggestions[key]}
+    value={disabled ? "应届生" : filters[key]} onSelect={(value) => setFilter(key, value)} disabled={disabled}>
+    {field(key, "填写 BOSS 页面上的选项名称", disabled, "")}
+  </FilterOptions>;
 
-  const resetArea = { district: undefined, business_area: undefined, metro_line: undefined, metro_station: undefined };
   const selectEmployment = (next: EmploymentType) => edit(() => {
     if (kind === "campus" || next === "campus") {
       setFilters((value) => ({ ...value, experience: undefined }));
@@ -197,9 +228,7 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
     setKind(next);
   });
   const scope = [
-    { value: filters.city, clear: () => edit(() => setFilters((value) => ({
-      ...value, ...resetArea, city: undefined, province: undefined,
-    }))) },
+    { value: filters.city, clear: () => selectCity() },
     { value: kind === "any" ? "" : employmentLabels[kind], clear: () => selectEmployment("any") },
     { value: filters.query, clear: () => edit(() => setFilters((value) => ({ ...value, query: undefined }))) },
   ];
@@ -207,6 +236,18 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
   const closeDrawer = () => {
     drawer.current?.close();
     onClose?.();
+  };
+
+  const filterSection = (label: string, children: ReactNode) => {
+    const expanded = !collapsedSections[label];
+    const panel = `${advancedId}-${label}`;
+    return <section className="task-filter-section" aria-label={label}>
+      <h3><button type="button" className="task-filter-section-toggle" aria-expanded={expanded} aria-controls={panel}
+        onClick={() => setCollapsedSections((current) => ({ ...current, [label]: !current[label] }))}>
+        <ChevronRight size={17} aria-hidden="true" />{label}
+      </button></h3>
+      <div className="task-filter-section-body" id={panel} hidden={!expanded}>{children}</div>
+    </section>;
   };
 
   const contents = <>
@@ -228,8 +269,6 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
           target_roles: splitLabels(roles),
           boss_filters: {
             ...filters,
-            positions: parsePositionPaths(positions),
-            industries: splitLabels(industries),
             ...(kind === "campus" ? { experience: "应届生" } : {}),
           },
         };
@@ -245,23 +284,26 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
           {!scope.some((item) => item.value) && <small>沿用 BOSS 当前城市，求职类型不限。</small>}
         </div>
         {activeTab === "basic" ? <>
-          <fieldset className="task-fieldset"><legend>求职类型</legend>
-            <div className="task-segmented">
+          <fieldset className="task-condition-row"><legend>求职类型</legend>
+            <div className="task-filter-choices">
               {(Object.keys(employmentLabels) as EmploymentType[]).map((next) =>
                 <button key={next} type="button" aria-pressed={kind === next} onClick={() => selectEmployment(next)}>
                   {next === "full_time" ? "全职" : next === "campus" ? "校招" : employmentLabels[next]}
                 </button>)}
             </div>
           </fieldset>
+          <CityPicker city={filters.city} province={filters.province} onSelect={selectCity} />
           <label>岗位方向<input value={roles} maxLength={400} placeholder="例如：嵌入式软件、MCU；留空使用个人资料中的求职方向" onChange={(event) => edit(() => setRoles(event.target.value))} /></label>
-          <div className="form-grid">
-            {field("city", "例如：深圳；留空沿用当前城市")}
-            {field("province", "例如：广东；用于区分同名城市", !hasCity)}
-          </div>
           {field("query", "用于在 BOSS 搜索，可与岗位方向不同")}
           <button type="button" className="task-text-link task-more-filters" onClick={() => setActiveTab("advanced")}>更多条件在高级筛选 <ChevronRight size={15}/></button>
         </> : <>
-          <fieldset className="task-fieldset" disabled={!hasCity}><legend>工作区域</legend>
+          {filterSection("岗位要求", <>
+            {choices("salary")}
+            {choices("experience", kind === "campus")}
+            {kind === "campus" && <p className="muted">校招使用 BOSS 的「全职」和「应届生」筛选。</p>}
+            {choices("degree")}
+          </>)}
+          {filterSection("工作区域", <fieldset className="task-fieldset" disabled={!hasCity}>
             <div className="task-segmented">
               {([["district", "行政区与商圈"], ["metro", "地铁"]] as const).map(([value, label]) =>
                 <button key={value} type="button" aria-pressed={areaMode === value} onClick={() => {
@@ -279,21 +321,16 @@ export function JobPreferencesPage({ onClose, onSaved, initialPreferences, local
               {field("metro_line", "例如：1号线")}
               {field("metro_station", "例如：高新园", !hasParent(filters.metro_line))}
             </div>}
-            {!hasCity && <p className="muted">填写城市后可设置工作区域。</p>}
-          </fieldset>
-          <label>职位分类路径<textarea value={positions} maxLength={1600} rows={2} placeholder="电子/电气/通信 > 电子/硬件开发 > 嵌入式软件工程师" onChange={(event) => edit(() => setPositions(event.target.value))} /></label>
-          <p className="muted">每行填写一个完整的 BOSS 分类路径，用 &gt; 分隔层级。</p>
-          <fieldset className="task-fieldset"><legend>其他条件</legend>
-            <div className="form-grid task-preference-grid">
-              {field("salary", "选择或填写平台薪资选项")}
-              {field("experience", "例如：在校生", kind === "campus")}
-              {field("degree", "例如：本科")}
-              <label>公司行业<input value={industries} maxLength={400} placeholder="例如：电子/硬件开发、半导体/芯片" onChange={(event) => edit(() => setIndustries(event.target.value))} /></label>
-              {field("company_size", "例如：100-499人")}
-              {field("financing", "例如：已上市")}
-            </div>
-          </fieldset>
-          {kind === "campus" && <p className="muted">校招使用 BOSS 的「全职」和「应届生」筛选。</p>}
+            {!hasCity && <p className="muted">选择城市后可设置工作区域。</p>}
+          </fieldset>)}
+          {filterSection("职位分类", <FilterCatalogPicker label="职位分类" showLabel={false} options={positions} value={filters.positions ?? []}
+            onChange={(values) => edit(() => setFilters((current) => ({ ...current, positions: values })))} />)}
+          {filterSection("公司条件", <>
+            {choices("company_size")}
+            {choices("financing")}
+            <FilterCatalogPicker label="公司行业" options={industries} value={(filters.industries ?? []).map((value) => [value])}
+              onChange={(values) => edit(() => setFilters((current) => ({ ...current, industries: values.map(([value]) => value) })))} />
+          </>)}
         </>}
       </fieldset></div>
       <div className="task-drawer-footer">

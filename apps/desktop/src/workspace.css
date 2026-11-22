@@ -28,7 +28,6 @@
 .workspace-shell .nav-item:hover { background: var(--soft-surface); }
 .workspace-shell .nav-item.selected { color: #3b2ac2; background: var(--accent-soft); }
 .workspace-shell .nav-item b { color: #3b2ac2; background: #e2dbff; font-variant-numeric: tabular-nums; }
-.workspace-shell .sidebar-bottom { border-top: 1px solid var(--line); padding-top: 9px; }
 .workspace-shell main {
   width: calc(100% - var(--side-width));
   margin-left: var(--side-width);
@@ -86,6 +85,7 @@
 }
 .workspace-content { padding: 24px clamp(18px, 2.1vw, 34px) 32px; max-width: 1700px; margin-inline: auto; }
 .workspace-shell :where(button, input, select, textarea, a, summary):focus-visible { outline: 2px solid #6151e5; outline-offset: 2px; }
+.workspace-shell .nav-item:focus-visible { outline-offset: -2px; }
 .workspace-shell .button.primary { background: var(--accent); color: white; }
 .workspace-shell .button.primary:hover:not(:disabled) { background: #382bd1; }
 .workspace-shell .button { min-height: 37px; border-radius: 8px; }

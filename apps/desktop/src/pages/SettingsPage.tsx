@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ArrowRight, Bot, Cable, ChevronDown, CircleCheck, ContactRound, FileText, MessagesSquare, Monitor, Play } from "lucide-react";
+import { Bot, ChevronDown, CircleCheck, FileText, Monitor } from "lucide-react";
 import { Button } from "../components/ui/button";
 import type { BrowserState, Connection } from "../contracts";
 import { hasResumeFields, Profile } from "./Profile";
@@ -8,13 +8,6 @@ import { Resume } from "./Resume";
 import type { Extraction } from "./profile-draft";
 import "./WorkspaceSettings.css";
 
-export type SettingsTab = "resume" | "profile" | "replies" | "connections";
-const tabs = [
-  { key: "resume", label: "简历", icon: FileText },
-  { key: "profile", label: "个人信息", icon: ContactRound },
-  { key: "replies", label: "回复规则", icon: MessagesSquare },
-  { key: "connections", label: "连接与诊断", icon: Cable },
-] as const;
 const connectionLabels: Record<Connection["state"], string> = {
   ready: "已连接",
   disconnected: "未连接",
@@ -25,24 +18,19 @@ const connectionLabels: Record<Connection["state"], string> = {
   error: "连接异常",
 };
 
-export function SettingsPage({ active, onTabChange, onSaved, diagnostics }: {
-  active: SettingsTab;
-  onTabChange: (tab: SettingsTab) => void;
+export function SettingsContent({ active, onProfile, onSaved, diagnostics }: {
+  active: "resume" | "profile" | "replies" | "connections";
+  onProfile: () => void;
   onSaved: () => void | Promise<void>;
   diagnostics: ReactNode;
 }) {
   const [resumeExtraction, setResumeExtraction] = useState<Extraction>();
   return (
     <section className="settings-page">
-      <nav className="workspace-tabs" aria-label="设置分类">
-        {tabs.map(({ key, label, icon: Icon }) =>
-          <button key={key} type="button" aria-pressed={active === key}
-            onClick={() => onTabChange(key)}><Icon size={17} aria-hidden="true" />{label}</button>)}
-      </nav>
       {active === "resume" && <Resume onSaved={onSaved} onExtracted={(result) => {
         if (!hasResumeFields(result)) return false;
         setResumeExtraction(result);
-        onTabChange("profile");
+        onProfile();
         return true;
       }} />}
       <div hidden={active !== "profile"}>
@@ -65,7 +53,7 @@ export type BrowserDiagnostic = {
 
 export function ConnectionDiagnostics({
   browser, connection, busy, browserInUse, desktop, diagnostic,
-  onConnectChrome, onSelectTab, onInspect, onConnectCodex, onLogin, onDemo,
+  onConnectChrome, onRefreshTabs, onSelectTab, onInspect, onConnectCodex, onLogin, onCancelLogin,
 }: {
   browser: BrowserState;
   connection: Connection;
@@ -74,15 +62,20 @@ export function ConnectionDiagnostics({
   desktop: boolean;
   diagnostic?: BrowserDiagnostic | null;
   onConnectChrome: () => void;
+  onRefreshTabs: () => void;
   onSelectTab: (id: string) => void;
   onInspect: () => void;
-  onConnectCodex: () => void;
+  onConnectCodex: (reuseLogin?: boolean) => void;
   onLogin: () => void;
-  onDemo: () => void;
+  onCancelLogin: () => void;
 }) {
-  const browserScope = browser.tabs?.filter((tab) => tab.url.startsWith("https://www.zhipin.com/")) ?? [];
-  const connectingCodex = connection.state === "connecting" || connection.state === "logging_in";
-  const browserStep = browser.pinned_target ? 3 : browser.connected ? 2 : 1;
+  const browserScope = browser.tabs?.filter((tab) => tab.url === "https://www.zhipin.com" || tab.url.startsWith("https://www.zhipin.com/")) ?? [];
+  const loggingIn = connection.state === "logging_in";
+  const browserConnected = browser.connected && !browser.connecting;
+  const browserStep = browserConnected ? (browser.pinned_target ? 3 : 2) : 1;
+  const canChangeBrowser = desktop && !busy && !browserInUse && !browser.connecting;
+  const browserHint = browser.connecting ? "正在启动并连接求职专用 Chrome。" : !browserConnected ? "打开求职专用 Chrome 并连接。"
+    : browser.pinned_target ? "已绑定 BOSS 标签页。" : "在求职专用 Chrome 中登录 BOSS 直聘，然后刷新标签并选择。";
   return (
     <section className="settings settings-diagnostics" aria-label="连接与诊断">
       <div className="settings-connection-grid">
@@ -92,32 +85,35 @@ export function ConnectionDiagnostics({
             <span className="settings-chrome-mark" aria-hidden="true" />
             <div>
               <div className="settings-connection-title"><h3>Chrome</h3>
-                <span className={`workspace-tag ${browser.connected ? "success" : ""}`}>
-                  {browser.connected ? "已连接" : browser.installed === false ? "组件未安装" : "未连接"}
+                <span className={`workspace-tag ${browserConnected ? "success" : ""}`}>
+                  {browser.connecting ? "连接中" : browserConnected ? "已连接" : browser.installed === false ? "组件未安装" : "未连接"}
                 </span>
               </div>
-              <p>{browser.pinned_target ? "已绑定投递标签页" : browser.connected ?
-                "选择需要绑定的 BOSS 标签页" : "在 Chrome 允许远程调试，然后选择 BOSS 标签页。"}</p>
+              <p role="status">{browserHint}</p>
             </div>
-            <Button disabled={!desktop || busy || browserInUse} onClick={onConnectChrome}>
-              连接 Chrome
+            <Button disabled={!canChangeBrowser} onClick={onConnectChrome}>
+              {browserConnected ? "重新连接" : "连接 Chrome"}
             </Button>
           </div>
           <ol className="settings-steps" aria-label="浏览器连接进度">
-            {["连接 Chrome", "选择 BOSS 标签", "检查页面"].map((label, index) =>
+            {["连接 Chrome", "绑定 BOSS 标签", "检查页面"].map((label, index) =>
               <li key={label} aria-current={browserStep === index + 1 ? "step" : undefined}>
                 <span>{browserStep > index + 1 ? <CircleCheck size={17} /> : index + 1}</span> {label}
               </li>)}
           </ol>
-          {browser.connected && <label className="settings-target-label">选择 BOSS 标签页
-            <select aria-label="BOSS 标签页" value={browser.pinned_target || ""}
-              disabled={busy || browserInUse || !browserScope.length} onChange={(event) => {
-                if (event.target.value) onSelectTab(event.target.value);
-              }}>
-              <option value="">{browserScope.length ? "请选择已登录的 BOSS 页面" : "未发现可连接的 BOSS 页面"}</option>
-              {browserScope.map((tab) => <option value={tab.targetId} key={tab.targetId}>{tab.title || tab.url}</option>)}
-            </select>
-          </label>}
+          {browser.connection_error && <p className="settings-browser-error" role="alert">{browser.connection_error}</p>}
+          {browserConnected && <div className="settings-target-actions">
+            <label className="settings-target-label">选择 BOSS 标签页
+              <select aria-label="BOSS 标签页" value={browser.pinned_target || ""}
+                disabled={!canChangeBrowser || !browserScope.length} onChange={(event) => {
+                  if (event.target.value) onSelectTab(event.target.value);
+                }}>
+                <option value="" disabled>{browserScope.length ? "请选择已登录的 BOSS 页面" : "未发现可选择的 BOSS 标签页"}</option>
+                {browserScope.map((tab) => <option value={tab.targetId} key={tab.targetId}>{tab.title || tab.url}</option>)}
+              </select>
+            </label>
+            <Button variant="secondary" disabled={!canChangeBrowser} onClick={onRefreshTabs}>刷新标签</Button>
+          </div>}
           {browserInUse && <p className="muted">在执行工作台暂停任务后可修改浏览器连接。</p>}
         </article>
         <article className="settings-connection-card settings-model-card">
@@ -130,21 +126,24 @@ export function ConnectionDiagnostics({
               </span>
             </div>
           </div>
-          <p>{connection.message}</p>
+          <p role="status">{connection.message}</p>
           {connection.version && <p className="muted">版本 {connection.version}</p>}
           <div className="settings-model-actions">
-            <Button variant="secondary" disabled={!desktop || busy || connectingCodex} onClick={onConnectCodex}>连接 Codex</Button>
-            {connection.state === "login_required" && <Button disabled={busy} onClick={onLogin}>登录 ChatGPT</Button>}
+            {loggingIn
+              ? <Button variant="secondary" disabled={!desktop || busy} onClick={onCancelLogin}>取消登录</Button>
+              : <>
+                <Button variant="secondary" disabled={!desktop || busy || connection.state === "connecting"} onClick={() => onConnectCodex()}>连接 Codex</Button>
+                {connection.state !== "ready" && <Button variant="secondary" disabled={!desktop || busy || connection.state === "connecting"}
+                  onClick={() => onConnectCodex(true)}>使用已有 Codex 登录</Button>}
+              </>}
+            {connection.state === "login_required" && <Button disabled={!desktop || busy} onClick={onLogin}>登录 ChatGPT</Button>}
           </div>
         </article>
       </div>
       <div className="settings-diagnostic-rows">
-        <Button variant="secondary" className="settings-diagnostic-row" disabled={!desktop || busy || !browser.connected || !browser.pinned_target} onClick={onInspect}>
+        <Button variant="secondary" className="settings-diagnostic-row" disabled={!desktop || busy || !browserConnected || !browser.pinned_target} onClick={onInspect}>
           <Monitor size={21} /><strong>检查当前页面</strong>
           {!browser.pinned_target && <span className="workspace-tag">绑定标签后可用</span>}
-        </Button>
-        <Button variant="secondary" className="settings-diagnostic-row" disabled={!desktop || busy} onClick={onDemo}>
-          <Play size={21} /><strong>运行本地演示</strong><ArrowRight size={20} />
         </Button>
         <details className="settings-diagnostic-details" open={diagnostic ? true : undefined}>
           <summary className="settings-diagnostic-row"><FileText size={21} /><strong>诊断详情</strong><ChevronDown size={20} /></summary>

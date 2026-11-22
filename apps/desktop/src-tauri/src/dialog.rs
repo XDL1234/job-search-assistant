@@ -2,12 +2,29 @@
 use std::{env, path::PathBuf};
 use tokio::process::Command;
 
+pub fn startup_error(message: &str) {
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn MessageBoxW(window: isize, text: *const u16, title: *const u16, flags: u32) -> i32;
+        }
+        let text = message.encode_utf16().chain([0]).collect::<Vec<_>>();
+        let title = "求职助手无法打开".encode_utf16().chain([0]).collect::<Vec<_>>();
+        unsafe { MessageBoxW(0, text.as_ptr(), title.as_ptr(), 0x10); }
+    }
+    #[cfg(not(windows))]
+    eprintln!("{message}");
+}
+
 #[tauri::command]
 pub async fn pick_file(kind: String) -> Result<Option<String>, String> {
     let filter = match kind.as_str() {
         "profile" => "资料文件 (*.pdf;*.docx;*.json)|*.pdf;*.docx;*.json",
         "resume" => "简历 (*.pdf;*.docx)|*.pdf;*.docx",
         "companies" => "公司表 (*.xlsx;*.csv)|*.xlsx;*.csv",
+        "photo" => "证件照 (*.jpg;*.jpeg;*.png)|*.jpg;*.jpeg;*.png",
+        "portfolio" => "作品集和附件 (*.pdf;*.doc;*.docx;*.jpg;*.jpeg;*.png;*.zip;*.rar)|*.pdf;*.doc;*.docx;*.jpg;*.jpeg;*.png;*.zip;*.rar",
         _ => return Err("未知文件类型".into()),
     };
     let script = format!("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); Add-Type -AssemblyName System.Windows.Forms; $dialog=New-Object System.Windows.Forms.OpenFileDialog; $dialog.Filter='{filter}'; $dialog.CheckFileExists=$true; $owner=New-Object System.Windows.Forms.Form; $owner.TopMost=$true; try {{ if ($dialog.ShowDialog($owner) -eq 'OK') {{ [Console]::Write($dialog.FileName) }} }} finally {{ $dialog.Dispose(); $owner.Dispose() }}");

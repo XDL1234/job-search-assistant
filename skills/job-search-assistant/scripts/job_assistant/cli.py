@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -251,6 +252,10 @@ def main(argv=None):
     request.add_argument('--file', type=Path, required=True)
     app_request = commands.add_parser('app-request', help='桌面应用受限接口')
     app_request.add_argument('--file', type=Path, required=True)
+    migration = commands.add_parser('migrate-desktop-storage', help=argparse.SUPPRESS)
+    migration.add_argument('--source', type=Path, required=True)
+    migration.add_argument('--destination', type=Path, required=True)
+    migration.add_argument('--legacy-webview', type=Path)
     install = commands.add_parser('install', help='将自包含 Skill 安装到用户目录，不覆盖已有不同版本')
     install.add_argument('--destination', type=Path, default=Path.home() / '.agents/skills/job-search-assistant')
     commands.add_parser('doctor', help='验证依赖、数据库及 Excel 写入，不移动鼠标')
@@ -267,6 +272,11 @@ def main(argv=None):
             return 0
         if args.command == 'bootstrap':
             result = setup(args.root, args.install)
+        elif args.command == 'migrate-desktop-storage':
+            if os.environ.get('JOB_ASSISTANT_EMBEDDED') != '1' or args.destination.resolve().is_relative_to(SKILL_ROOT):
+                raise ValueError('资料迁移只供桌面应用使用')
+            from .desktop_storage import migrate_desktop_storage
+            result = migrate_desktop_storage(args.source, args.destination, args.legacy_webview)
         elif args.command == 'install':
             result = install_skill(SKILL_ROOT, args.destination)
         elif args.command == 'doctor':
@@ -291,7 +301,7 @@ def main(argv=None):
                 store.close()
         print(json.dumps({'ok': True, 'result': result}, ensure_ascii=False, indent=2))
         return 0
-    except (ValueError, KeyError, OSError, RuntimeError) as error:
+    except (ValueError, KeyError, OSError, RuntimeError, sqlite3.Error) as error:
         print(json.dumps({'ok': False, 'error': str(error), 'type': type(error).__name__}, ensure_ascii=False))
         return 1
 

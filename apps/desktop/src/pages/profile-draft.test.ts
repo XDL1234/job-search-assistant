@@ -34,6 +34,24 @@ describe("从简历补齐个人信息草稿", () => {
     expect(fillFromResume(changed!.profile, parsed, fields, groups, new Set(), {})).toBeUndefined();
   });
 
+  it("重读简历时在同一条旧获奖记录拆出级别，保留已填写的级别", () => {
+    const awards = [{ key: "awards", fields: ["name", "date", "level", "description"].map((key) => ({ key })) }];
+    const current = { awards: [
+      { name: "示例竞赛    省级一等奖", date: "2026.04.07", description: "手动说明" },
+      { name: "其他竞赛（荣获二等奖）", date: "2025-07", level: "市级二等奖" },
+    ] };
+    const parsed = extract({ awards: [
+      { name: "示例竞赛", date: "2026-04-07", level: "省级一等奖" },
+      { name: "其他竞赛", date: "2025-07", level: "二等奖" },
+    ] });
+    const changed = fillFromResume(current, parsed, fields, awards, new Set(), {});
+    expect(changed?.profile.awards).toEqual([
+      { name: "示例竞赛", date: "2026.04.07", level: "省级一等奖", description: "手动说明" },
+      { name: "其他竞赛", date: "2025-07", level: "市级二等奖" },
+    ]);
+    expect(fillFromResume(changed!.profile, parsed, fields, awards, new Set(), {})).toBeUndefined();
+  });
+
   it("不恢复用户移除的同一条记录，可以追加同公司不同时间的经历", () => {
     const work = [{ key: "work_experience", fields: ["company", "role", "start_date"].map((key) => ({ key })), ongoing: true }];
     const removed = { company: "示例公司", role: "开发", start_date: "2024-09" };

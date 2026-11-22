@@ -1,0 +1,31 @@
+.city-picker .city-picker-trigger {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 8px;
+  font-weight: 500;
+}
+.city-picker .city-picker-chevron { margin-left: auto; }
+.city-picker-trigger small, .city-picker-options small { color: var(--task-muted); }
+.city-picker-panel {
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--task-line);
+  border-radius: 9px;
+  background: var(--task-tint);
+}
+.city-picker-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.task-preference-form .city-picker-controls label,
+.task-preference-form .city-picker-controls :is(input, select) { margin: 0; }
+.task-preference-form .city-picker-controls select { padding: 8px; }
+.city-picker-caption { margin: 10px 0 6px; color: var(--task-muted); font-size: 12px; }
+.city-picker-options {
+  max-height: 155px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.city-picker-options small { margin-left: 5px; font-size: 11px; }
+.city-picker .city-picker-default { margin-top: 6px; }

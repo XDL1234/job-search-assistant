@@ -14,6 +14,22 @@ for line in sys.stdin:
     request=json.loads(line)
     method=request.get('method')
     if method=='initialize':send({'id':request['id'],'result':{}},True)
+    elif method=='account/read':
+        send({'id':request['id'],'result':{'account':{'type':'chatgpt'}}})
+    elif method=='model/list':
+        assert request['params']['includeHidden'] is False
+        if request['params']['cursor'] is None:
+            data=[{'model':'text-only','hidden':False,'isDefault':True,'inputModalities':['text']}]
+            cursor='second'
+        else:
+            assert request['params']['cursor']=='second'
+            data=[{'model':'hidden-image','hidden':True,'isDefault':False,'inputModalities':['text','image']},
+                  {'model':'account-image','hidden':False,'isDefault':False,'inputModalities':['text','image'],
+                   'defaultReasoningEffort':'medium','serviceTiers':[]}]
+            cursor=None
+        send({'id':request['id'],'result':{'data':data,'nextCursor':cursor}})
+    elif method in ('thread/start','thread/resume'):
+        send({'id':request['id'],'result':request['params']})
     elif method=='ping':
         send({'method':'test/notification','params':{'ok':True}})
         send({'id':request['id'],'result':{'pong':True}},True)

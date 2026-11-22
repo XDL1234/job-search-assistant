@@ -49,6 +49,16 @@ function comparable(value: unknown, field: string) {
   return date ? [date[1], ...date.slice(2).filter(Boolean).map((part) => part.padStart(2, "0"))].join("-") : text;
 }
 
+function hasLegacyAwardName(old: Record<string, unknown>, candidate: Record<string, unknown>) {
+  const name = identity(old, "name");
+  const title = identity(candidate, "name");
+  const level = normalized(candidate.level);
+  if (!title || !level || !name.startsWith(title)) return false;
+  // Earlier imports stored the prize as a suffix of the award title.
+  const suffix = name.slice(title.length).replace(/^[|:、,;—–\-(]+|\)+$/g, "").replace(/^(?:荣获|获得|获)/, "");
+  return suffix === level;
+}
+
 function sameEntry(group: string, left: unknown, right: Record<string, unknown>) {
   const [primary, ...qualifiers] = identityFields[group];
   const key = identity(right, primary);
@@ -57,7 +67,7 @@ function sameEntry(group: string, left: unknown, right: Record<string, unknown>)
       Boolean(key && [left, left.split(/[：:；;｜|]/, 1)[0]].some((label) => normalized(label) === key));
   }
   const old = record(left);
-  if (!key || identity(old, primary) !== key) return false;
+  if (!key || (identity(old, primary) !== key && !(group === "awards" && hasLegacyAwardName(old, right)))) return false;
   return qualifiers.every((field) => {
     const a = comparable(old[field], field);
     const b = comparable(right[field], field);
@@ -109,10 +119,12 @@ export function fillFromResume(current: ProfileData, extraction: Extraction, fie
       } else if (matches.length === 1 && typeof rows[matches[0]] !== "string") {
         const index = matches[0];
         const old = record(rows[index]);
-        const missing = Object.entries(candidate).filter(([field]) => old[field] == null &&
-          !(field === "end_date" && old.current === true) && !(field === "current" && hasValue(old.end_date)));
-        if (missing.length) {
-          rows[index] = { ...old, ...Object.fromEntries(missing) };
+        const legacyAward = key === "awards" && hasLegacyAwardName(old, candidate);
+        const updates = Object.entries(candidate).filter(([field]) => (legacyAward && field === "name") ||
+          (old[field] == null && !(field === "end_date" && old.current === true) &&
+            !(field === "current" && hasValue(old.end_date))));
+        if (updates.length) {
+          rows[index] = { ...old, ...Object.fromEntries(updates) };
           changed.add(key);
         }
       }

@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button";
 import { native, request } from "../bridge";
 import type { EmploymentType, JobPreferences, Run, TaskConfig } from "../contracts";
 import { BossFilterSummary, employmentLabels, JobPreferencesPage, splitLabels } from "./JobPreferences";
+import { WebResumeFill } from "./WebResumeFill";
 import { preferencesFromRun, rememberDraft, storedDraft, taskDraftFromRun, taskDraftKey, type TaskDraft } from "./task-draft";
 import "./task-pages.css";
 
@@ -14,6 +15,11 @@ const modes = [
   ["script", "脚本快速沟通", "按卡片标题和标签核对 · 无需 Codex", MessageCircle],
   ["filtered", "AI 看岗位卡片", "根据卡片信息判断 · 需连接 Codex", Clipboard],
   ["screened", "AI 阅读岗位详情", "读取岗位职责后判断 · 需连接 Codex", FileText],
+] as const;
+
+const companyModes = [
+  [false, "仅填写，我来提交", "填写完停在当前网页，由你核对并提交。"],
+  [true, "填写并自动提交", "AI 填写并检查必填项后直接提交。"],
 ] as const;
 
 type CompanyInspection = {
@@ -66,6 +72,8 @@ export function TaskSetup({
   const [scope, setScope] = useState<"saved" | "current">(seed.scope);
   const [preferences, setPreferences] = useState<JobPreferences | null>(() => preferencesFromRun(initialRun));
   const [editorOpen, setEditorOpen] = useState(false);
+  const [webFillOpen, setWebFillOpen] = useState(false);
+  const [webSubmit, setWebSubmit] = useState(initialRun?.config.web_submit === true);
   const [roles, setRoles] = useState(seed.roles ?? "");
   const [limit, setLimit] = useState(seed.limit);
   const [tablePath, setTablePath] = useState(seed.tablePath);
@@ -143,7 +151,7 @@ export function TaskSetup({
       window_title: isBoss ? "BOSS直聘" : initialRun?.config.window_title ?? "Google Chrome",
       ...(useSaved && preferences ? { boss_filters: preferences.boss_filters } : {}),
       ...(isBoss && !useSaved && initialRun?.config.cities?.length ? { cities: initialRun.config.cities } : {}),
-      ...(!isBoss && table ? { company_table: table.path, reviewed_company_table_sha256: table.sha256 } : {}),
+      ...(!isBoss && table ? { company_table: table.path, reviewed_company_table_sha256: table.sha256, web_submit: webSubmit } : {}),
     };
     setPreview(await request("preview_run", { config, ...(initialRun ? { run_id: initialRun.id } : {}) }));
   });
@@ -175,6 +183,10 @@ export function TaskSetup({
           onSwitchChannel?.(id);
         }}><Icon size={16} aria-hidden="true"/>{label}</button>)}
     </div>}
+    {!isBoss && !initialRun && !preview && <div className="task-outline web-resume-fill-entry">
+      <div><h2>填写已打开的网页简历</h2><p>适用阿里校招和北汽招聘。先预览字段，再填写。</p></div>
+      <Button variant="secondary" onClick={() => setWebFillOpen(true)}><Clipboard size={16} aria-hidden="true"/>网页简历填写</Button>
+    </div>}
     <Steps labels={isBoss ? ["设置范围", "确认范围", "工作台"] : ["导入公司表", "核对清单", "预览任务"]}
       current={preview ? isBoss ? 1 : 2 : !isBoss && table ? 1 : 0}/>
     {error && <div className="banner error" role="alert">{error}</div>}
@@ -203,13 +215,19 @@ export function TaskSetup({
             <div className="task-confirm-row"><FileSpreadsheet size={26}/><div>
               <h2>本轮公司 · {preview.config.company_rows?.length || 0} 家</h2>
               <ul className="task-company-confirm">
-                {preview.config.company_rows?.map((row) => <li key={row.source_row}><strong>{row.company}</strong><span>{row.url}</span></li>)}
+                {preview.config.company_rows?.map((row) => <li key={row.source_row}>
+                  <strong>{row.company}{row.job && <> · {row.job}</>}</strong><span>{row.url}</span>
+                </li>)}
               </ul>
             </div><button className="task-text-link" onClick={() => setPreview(null)} disabled={busy}>修改</button></div>
             <div className="task-confirm-row"><BriefcaseBusiness size={26}/><div>
               <h2>本轮岗位</h2><p>{preview.config.target_roles.join("、") || "以公司表明确列出的岗位为准"}</p>
               {preview.config.filters && <p>{preview.config.filters}</p>}
             </div></div>
+            <div className="task-confirm-row"><Check size={26}/><div>
+              <h2>提交方式</h2><p>{companyModes[preview.config.web_submit ? 1 : 0][1]}</p>
+              <p>{companyModes[preview.config.web_submit ? 1 : 0][2]}</p>
+            </div><button className="task-text-link" onClick={() => setPreview(null)} disabled={busy}>修改</button></div>
           </>}
         </div>
         <aside className="task-outline task-confirm-checks">
@@ -223,7 +241,7 @@ export function TaskSetup({
         </aside>
       </div>
       <div className="task-setup-footer">
-        <span><Info size={18}/>{initialRun ? "保存后返回工作台，由你启动续投" : "创建任务只保存范围，执行工作台启动后开始沟通或提交"}</span>
+        <span><Info size={18}/>{initialRun ? "保存后返回工作台，由你启动任务" : "创建任务后，在工作台启动执行"}</span>
         <div><Button variant="secondary" disabled={busy} onClick={() => setPreview(null)}>返回修改</Button>
           <Button disabled={busy} onClick={() => void createTask()}>{initialRun ? "确认修改" : "确认并创建任务"}</Button></div>
       </div>
@@ -288,7 +306,7 @@ export function TaskSetup({
             </tr>)}
             {!table.rows.length && <tr><td colSpan={3} className="task-table-empty">没有可核对的公司</td></tr>}</tbody>
           </table></div> : <div className="task-company-empty">
-            <p>支持 Excel 和 UTF-8 CSV，包含「公司名称」和「申请网站」或「投递官网」两列。</p>
+            <p>支持 Excel 和 UTF-8 CSV。请提供公司名称、申请网站，可添加「岗位名称」列指定岗位。</p>
             <div className="task-filter-row">
               <input aria-label="公司表路径" placeholder="或粘贴本地公司表路径" value={tablePath} onChange={(event) => setTablePath(event.target.value)}/>
               <Button variant="secondary" disabled={busy || !tablePath.trim()} onClick={() => void perform(() => readTable(tablePath.trim()))}>读取公司表</Button>
@@ -305,6 +323,14 @@ export function TaskSetup({
             <Button variant="secondary" onClick={() => onMaterials("resume")}>管理简历</Button>
           </div>}
           <p><Info size={17}/>只填写已保存的信息，遇到缺失的必填项时转待办</p>
+          <fieldset className="task-fieldset task-mode-field" disabled={busy}>
+            <legend>提交方式</legend>
+            {companyModes.map(([value, label, detail]) => <label key={label} className="task-mode" data-selected={webSubmit === value}>
+              <input type="radio" name="web-submit" checked={webSubmit === value} onChange={() => setWebSubmit(value)}
+                aria-label={label} aria-describedby={value ? "web-submit-automatic" : "web-submit-manual"}/>
+              <span><strong>{label}</strong><small className="block" id={value ? "web-submit-automatic" : "web-submit-manual"}>{detail}</small></span>
+            </label>)}
+          </fieldset>
         </aside>
       </div>
       <div className="task-setup-footer task-company-footer">
@@ -319,5 +345,6 @@ export function TaskSetup({
       if (initialRun) setScope("saved");
     }}
       initialPreferences={preferences} localOnly={Boolean(initialRun)} />}
+    {webFillOpen && <WebResumeFill onClose={() => setWebFillOpen(false)}/>}
   </section>;
 }

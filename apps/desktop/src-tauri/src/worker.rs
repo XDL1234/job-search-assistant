@@ -29,7 +29,7 @@ pub struct WorkerClient {
 
 pub(crate) fn ui_method_allowed(method: &str) -> bool {
     matches!(method,
-        "health" | "snapshot" | "export_records" | "read_image" | "preview_demo"
+        "health" | "snapshot" | "export_records" | "read_image"
             | "start_run" | "open_simulation" | "extract_profile" | "save_profile"
             | "get_profile" | "save_personal_info" | "get_resume" | "import_resume" | "preview_resume"
             | "extract_resume_profile" | "open_resume"
@@ -53,7 +53,16 @@ impl WorkerClient {
             c
         };
         command.arg("--root").arg(&self.root).kill_on_drop(true);
-        command.env("JOB_ASSISTANT_EMBEDDED", "1");
+        command
+            .env("JOB_ASSISTANT_EMBEDDED", "1")
+            .env("AGENT_BROWSER_SOCKET_DIR", self.root.join("agent-sockets"));
+        let tmp = self.root.join("tmp");
+        if tmp.is_dir() {
+            command
+                .env("JOB_ASSISTANT_DESKTOP_LOCK_PATH",
+                    std::env::temp_dir().join("job-search-assistant-desktop.lock"))
+                .env("TMPDIR", &tmp).env("TEMP", &tmp).env("TMP", &tmp);
+        }
         if let Some(token) = self.browser_token.lock().unwrap().as_ref() {
             command.env("JOB_ASSISTANT_STREAM_TOKEN", token);
         }
@@ -67,11 +76,7 @@ impl WorkerClient {
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
         let root = std::env::var_os("JOB_ASSISTANT_DATA_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default())
-                    .join(".job-search-assistant/desktop")
-            });
-        std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+            .unwrap_or_else(|| resources.join("data"));
         let executable = std::env::var_os("JOB_ASSISTANT_WORKER")
             .map(PathBuf::from)
             .or_else(|| (!cfg!(debug_assertions)).then(|| installed_worker(resources)).flatten());
@@ -95,6 +100,52 @@ impl WorkerClient {
             codex,
             browser_token: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub async fn prepare_storage(&self, legacy: &Path, legacy_webview: Option<&Path>) -> Result<(), String> {
+        let default_root = std::env::var_os("JOB_ASSISTANT_DATA_DIR").is_none();
+        if default_root {
+            if let Ok(metadata) = self.root.symlink_metadata() {
+                let redirected = metadata.is_symlink();
+                #[cfg(windows)]
+                let redirected = {
+                    use std::os::windows::fs::MetadataExt;
+                    redirected || metadata.file_attributes() & 0x400 != 0
+                };
+                if !metadata.is_dir() || redirected {
+                    return Err(format!("安装目录下的数据位置不是普通文件夹：{}", self.root.display()));
+                }
+                if legacy.join("records.sqlite3").is_file() && !self.root.join("records.sqlite3").is_file() {
+                    return Err(format!("{} 已存在但缺少投递记录数据库。旧资料仍在原目录，请核查这个文件夹。", self.root.display()));
+                }
+            }
+        }
+        if default_root && !self.root.exists() {
+            if crate::dedicated_chrome::endpoint(&legacy.join("chrome-profile"), false)
+                .await?.is_some()
+            {
+                return Err("请关闭旧的求职专用 Chrome 窗口，再打开求职助手完成资料迁移。".into());
+            }
+            let mut command = self.command();
+            command.arg("migrate-desktop-storage")
+                .arg("--source").arg(legacy)
+                .arg("--destination").arg(&self.root);
+            if let Some(path) = legacy_webview {
+                command.arg("--legacy-webview").arg(path);
+            }
+            let output = command.output().await.map_err(|error| format!("无法运行资料迁移：{error}"))?;
+            if !output.status.success() {
+                let response = serde_json::from_slice::<Value>(&output.stdout).unwrap_or(Value::Null);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let detail = response["error"].as_str().unwrap_or(&stderr);
+                return Err(format!("无法准备数据目录 {}。请选择当前用户可写的安装目录。\n{}", self.root.display(), detail.trim()));
+            }
+        }
+        for directory in ["tmp", "codex"] {
+            std::fs::create_dir_all(self.root.join(directory))
+                .map_err(|error| format!("无法写入数据目录 {}。请选择当前用户可写的安装目录。\n{error}", self.root.display()))?;
+        }
+        Ok(())
     }
     pub async fn request(&self, request: UiRequest) -> Result<Value, String> {
         let directory = self.root.join("requests");
@@ -192,6 +243,7 @@ mod proxy_tests {
         assert!(!ui_method_allowed("execution_context"));
         assert!(!ui_method_allowed("revise_run"));
         assert!(!ui_method_allowed("export_records_to"));
+        assert!(!ui_method_allowed("preview_demo"));
         assert!(ui_method_allowed("health"));
         assert!(ui_method_allowed("snapshot"));
     }
@@ -242,7 +294,7 @@ for line in sys.stdin:
     print(json.dumps({'id':request['id'],'result':result}),flush=True)
 "#).unwrap();
         let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let client = crate::codex::CodexClient::spawn(&python, &root, sender, &proxy_environment).await.unwrap();
+        let client = crate::codex::CodexClient::spawn(&python, &root, sender, &proxy_environment, None).await.unwrap();
         let observed = client.request("proxy-probe", json!({})).await.unwrap();
         assert_eq!(observed["names"], json!(expected_names));
         assert_eq!(observed["internal_request_flag_absent"], true);

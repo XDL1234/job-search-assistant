@@ -82,6 +82,30 @@ class ResumeParserTests(unittest.TestCase):
         self.assertEqual(profile['languages'], [{'language': '英语', 'certificate': 'CET-6 510 分'},
                                                {'language': '法语', 'proficiency': '初级'}])
 
+    def test_award_levels_are_separated_from_each_award_name(self):
+        profile, _ = self.parse('''
+荣誉奖励
+• 全国大学生样例设计竞赛                      省级一等奖                     2026.04-07
+2025.04-06 | 中国样例挑战赛（机器人方向） | 全国初赛二等奖
+自动化样例竞赛（荣获全国赛三等奖） 2025-07
+校园样例设计大赛
+校级银奖
+2024年11月
+全国学生创新竞赛 2024.06
+获奖项目：示例创新荣誉
+获奖等级：市级
+国家奖学金 2024.03
+''')
+        self.assertEqual(profile['awards'], [
+            {'name': '全国大学生样例设计竞赛', 'date': '2026-04-07', 'level': '省级一等奖'},
+            {'name': '中国样例挑战赛（机器人方向）', 'date': '2025-04-06', 'level': '全国初赛二等奖'},
+            {'name': '自动化样例竞赛', 'date': '2025-07', 'level': '全国赛三等奖'},
+            {'name': '校园样例设计大赛', 'date': '2024-11', 'level': '校级银奖'},
+            {'name': '全国学生创新竞赛', 'date': '2024-06'},
+            {'name': '示例创新荣誉', 'level': '市级'},
+            {'name': '国家奖学金', 'date': '2024-03'},
+        ])
+
     def test_ignores_missing_sections_values_and_unverified_name(self):
         profile, sources = self.parse('''
 基本信息

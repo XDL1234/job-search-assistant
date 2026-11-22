@@ -4,13 +4,13 @@ Windows 求职辅助项目，提供桌面应用及 Codex Skill / 插件源码。
 
 **下载 Windows x64**
 
-[MSI 安装包](https://github.com/XDL1234/job-search-assistant/releases/download/v1.0.0/job-search-assistant-1.0.0-windows-x64.msi) · [当前用户 EXE 安装包](https://github.com/XDL1234/job-search-assistant/releases/download/v1.0.0/job-search-assistant-1.0.0-windows-x64-setup.exe) · [发布页](https://github.com/XDL1234/job-search-assistant/releases/tag/v1.0.0)
+[MSI 安装包](https://github.com/XDL1234/job-search-assistant/releases/download/v1.1.0/job-search-assistant-1.1.0-windows-x64.msi) · [当前用户 EXE 安装包](https://github.com/XDL1234/job-search-assistant/releases/download/v1.1.0/job-search-assistant-1.1.0-windows-x64-setup.exe) · [发布页](https://github.com/XDL1234/job-search-assistant/releases/tag/v1.1.0)
 
-常规安装双击 MSI，按提示授权并选择目录。没有管理员权限时使用 EXE。安装后可从桌面或开始菜单打开，无需预装 Python、Node 或 Rust。旧测试版迁移、安装要求和校验方法见[安装说明](docs/releases/v1.0.0.md)。
+常规安装双击 MSI，按提示授权并选择目录。没有管理员权限时使用 EXE。安装后可从桌面或开始菜单打开，无需预装 Python、Node 或 Rust。安装、升级与校验见[安装说明](docs/releases/v1.1.0.md)。
 
 ## 项目状态与文档
 
-Windows 桌面应用提供投递任务、执行工作台、待办、投递记录和设置。停止的任务可以编辑并继续，Excel 导出支持选择保存位置。独立 Skill 与本机浏览器面板仍可使用。
+Windows 桌面应用提供投递任务、执行工作台、待办、投递记录、简历、个人信息、回复规则与连接诊断。停止的任务可以编辑并继续，Excel 导出支持选择保存位置。独立 Skill 与本机浏览器面板仍可使用。
 
 - [文档索引与维护约定](https://github.com/XDL1234/job-search-assistant/blob/main/docs/README.md)
 - [八页界面稿与设计说明](https://github.com/XDL1234/job-search-assistant/blob/main/docs/design/app-ui-v1/README.md)
@@ -19,7 +19,7 @@ Windows 桌面应用提供投递任务、执行工作台、待办、投递记录
 - [后台浏览器连接与开发进度](docs/background-browser.md)
 - [变更记录](https://github.com/XDL1234/job-search-assistant/blob/main/CHANGELOG.md)
 
-桌面应用采用 Tauri 2、React、TypeScript，并复用 Python 与 SQLite。BOSS 通过内置浏览器组件连接现有 Chrome，工作台提供本地 JPEG 预览。公司网申支持导入清单和保存资料，扫描简历可用内置离线 OCR 回填。BOSS 附件发送、招聘方问答和公司官网实际提交仍待实站验收。连接方式见[后台浏览器说明](docs/background-browser.md)。
+桌面应用采用 Tauri 2、React、TypeScript，并复用 Python 与 SQLite。工作台可实时预览求职专用 Chrome 的 BOSS 或公司网申标签。公司网申支持用已保存资料填写，提交方式可选手动或自动。扫描简历可用内置离线 OCR 回填。BOSS 附件发送、招聘方问答和公司官网实际提交仍待实站验收。连接方式见[后台浏览器说明](docs/background-browser.md)。
 
 ## 单独安装 Skill（开发者与既有用户）
 

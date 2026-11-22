@@ -23,7 +23,7 @@ export function previewFrameUri(
   return `data:image/jpeg;base64,${frame.data}`;
 }
 
-export function Preview({ enabled = true }: { enabled?: boolean }) {
+export function Preview({ enabled = true, runId }: { enabled?: boolean; runId?: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [state, setState] = useState("connecting");
   const [message, setMessage] = useState("正在连接实时画面");
@@ -38,10 +38,15 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
   }, [enabled]);
 
   useEffect(() => {
-    const previousSurface = canvas.current;
-    previousSurface?.getContext("2d")?.clearRect(0, 0, previousSurface.width, previousSurface.height);
-    setCapturedAt(undefined);
-    setReceivedAt(undefined);
+    let revision = 0;
+    const clearFrame = () => {
+      revision += 1;
+      const surface = canvas.current;
+      surface?.getContext("2d")?.clearRect(0, 0, surface.width, surface.height);
+      setCapturedAt(undefined);
+      setReceivedAt(undefined);
+    };
+    clearFrame();
     if (!enabled) {
       setState("stopped");
       setMessage("实时预览未开启");
@@ -53,19 +58,12 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
     const channel = new Channel<PreviewEvent>();
     const stop = (identity: string) =>
       native("browser_preview_stop", { epoch: identity }).catch(() => undefined);
-    const acknowledge = (identity: string, seq: number) =>
-      native("browser_preview_ack", { epoch: identity, seq }).catch((error) => {
-        if (!disposed) {
-          setState("error");
-          setMessage(String(error));
-          void stop(identity);
-        }
-      });
     channel.onmessage = (event) => {
       if (disposed) return;
       if (!epoch && event.type === "status" && event.state === "connected") epoch = event.epoch;
       if (!epoch || event.epoch !== epoch) return;
       if (event.type === "status") {
+        if (["waiting", "blocked", "stopped", "error"].includes(event.state)) clearFrame();
         setState(event.state);
         setMessage(event.message);
         return;
@@ -73,6 +71,7 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
       const source = previewFrameUri(event, epoch, previous);
       if (!source) {
         // 上游按帧等待确认；错误不能把该订阅永久挂住。
+        clearFrame();
         setState("error");
         setMessage("实时画面数据无效，请重新连接");
         void stop(epoch);
@@ -80,10 +79,12 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
       }
       previous = event.seq;
       const identity = epoch;
+      const frameRevision = revision;
+      const current = () => !disposed && previous === event.seq && revision === frameRevision;
       const image = new Image();
       image.src = source;
       void image.decode().then(() => {
-        if (disposed || identity !== epoch) return;
+        if (!current()) return;
         const surface = canvas.current;
         const context = surface?.getContext("2d");
         if (!surface || !context) {
@@ -100,9 +101,16 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
         const timestamp = event.metadata.timestamp;
         if (typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8.64e15)
           setCapturedAt(timestamp);
-        void acknowledge(identity, event.seq);
+        void native("browser_preview_ack", { epoch: identity, seq: event.seq }).catch((error) => {
+          if (!current()) return;
+          clearFrame();
+          setState("error");
+          setMessage(String(error));
+          void stop(identity);
+        });
       }).catch(() => {
-        if (!disposed) {
+        if (current()) {
+          clearFrame();
           setState("error");
           setMessage("实时图片解码失败，请重新连接");
           void stop(identity);
@@ -111,9 +119,10 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
     };
     setState("connecting");
     setMessage("正在连接实时画面");
-    void native<{ epoch: string }>("browser_preview_start", { onEvent: channel }).then((result) => {
+    void native<{ epoch: string }>("browser_preview_start", { onEvent: channel, ...(runId ? { runId } : {}) }).then((result) => {
       if (disposed) { void stop(result.epoch); return; }
       if (epoch && epoch !== result.epoch) {
+        clearFrame();
         setState("error");
         setMessage("实时预览代际不一致");
         void stop(result.epoch);
@@ -121,13 +130,13 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
       }
       epoch = result.epoch;
     }).catch((error) => {
-      if (!disposed) { setState("error"); setMessage(String(error)); }
+      if (!disposed) { clearFrame(); setState("error"); setMessage(String(error)); }
     });
     return () => {
       disposed = true;
       if (epoch) void stop(epoch);
     };
-  }, [enabled]);
+  }, [enabled, runId]);
 
   const displayedAt = capturedAt ?? receivedAt;
   const age = previewAgeSeconds(displayedAt, now);
@@ -135,20 +144,21 @@ export function Preview({ enabled = true }: { enabled?: boolean }) {
     ? receivedAt ? "预览连接正常" : "已连接，等待首帧"
     : message;
 
-  return <div className="browser-preview flex flex-col overflow-hidden rounded-xl bg-slate-950">
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
-      <canvas ref={canvas} aria-label="BOSS 实时画面" role="img"
-        className="h-full w-full object-contain" />
+  return <div className={`browser-preview flex flex-col overflow-hidden rounded-xl ${receivedAt ? "bg-slate-950" : "bg-slate-100"}`}>
+    <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
+      <canvas ref={canvas} aria-label={runId ? "公司网申实时画面" : "BOSS 实时画面"} role="img"
+        className={`h-full w-full object-contain ${receivedAt ? "" : "invisible"}`} />
+      {!receivedAt && <span role="status" className="absolute px-4 text-center text-sm text-slate-700">{connectionText}</span>}
     </div>
-    <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-xs text-slate-200">
+    {receivedAt && <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-xs text-slate-200">
       <span role="status" className={state === "error" ? "text-amber-300" : undefined}>{connectionText}</span>
       {displayedAt && <time aria-live="off" dateTime={new Date(displayedAt).toISOString()}>
         最近画面{capturedAt ? "采集" : "接收"}：{new Date(displayedAt).toLocaleTimeString("zh-CN", { hour12: false })}
         {age !== undefined && `（${age} 秒前）`}
       </time>}
-    </div>
-    <p className="browser-preview-hint border-t border-slate-800 px-3 py-2 text-xs leading-relaxed text-slate-400">
+    </div>}
+    {!runId && <p className="browser-preview-hint border-t border-slate-800 px-3 py-2 text-xs leading-relaxed text-slate-400">
       建议将 BOSS 放在独立窗口并保持为当前标签。窗口可在后台；切换标签或最小化可能暂停画面更新。静态页面没有新帧时，连接仍可正常。
-    </p>
+    </p>}
   </div>;
 }

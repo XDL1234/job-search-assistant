@@ -41,6 +41,14 @@ class BossScriptTests(unittest.TestCase):
             self.assertIsNotNone(blocking_page(text))
         self.assertIsNone(blocking_page('推荐职位 嵌入式软件实习生 立即沟通'))
 
+    def test_job_copy_is_not_a_platform_verification_prompt(self):
+        from job_assistant.boss_script import blocking_page
+        listing = 'MCU 实习\n负责滑块电机驱动、验证码模块和安全验证流程设计。\n立即沟通'
+        self.assertIsNone(blocking_page(listing, include_interview=False))
+        for text in ('请拖动滑块完成验证', '请输入图形验证码', '访问受限，请稍后再试',
+                     '检测到异常访问，请完成安全验证', '系统检测到您的操作过于频繁，请稍后重试'):
+            self.assertEqual(blocking_page(text), '平台要求验证或限制访问，请人工处理')
+
     def test_full_time_and_campus_do_not_take_internships(self):
         from job_assistant.boss_script import choose_card
         cards=[{'key':'intern','job':'MCU工程师','tags':'实习','company':'A','contacted':False},
@@ -98,6 +106,23 @@ class BossPagingTests(unittest.TestCase):
         state=json.loads(self.state_path.read_text(encoding='utf-8'))
         self.assertEqual(state['phase'],'open')
         self.assertEqual(state['visited_pages'],[])
+
+    def test_resume_reobserves_page_if_candidate_evidence_failed_before_checkpoint(self):
+        pages = [self.page(), self.page('match'), ValueError('页面正在加载'), self.page('match')]
+        with patch('job_assistant.boss_script.browser_action', side_effect=pages) as browser:
+            self.step()
+            with patch.object(self.store, 'evidence', side_effect=OSError('截图暂时不可用')):
+                with self.assertRaisesRegex(OSError, '截图暂时不可用'):
+                    self.step()
+            self.assertEqual(json.loads(self.state_path.read_text(encoding='utf-8'))['phase'], 'next')
+            with self.assertRaisesRegex(ValueError, '页面正在加载'):
+                self.step()
+            self.assertEqual(json.loads(self.state_path.read_text(encoding='utf-8'))['phase'], 'list')
+            resumed = self.step()
+        self.assertEqual([call.args[2] for call in browser.call_args_list], ['observe', 'next', 'observe', 'observe'])
+        self.assertEqual(self.store.one('attempts', resumed['attempt_id'])['status'], 'in_progress')
+        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM attempts WHERE status='skipped'").fetchone()[0], 1)
+        self.assertEqual(self.store.conn.execute('SELECT COUNT(*) FROM actions').fetchone()[0], 0)
 
     def test_repeated_or_cycling_pages_stop_and_remain_stopped(self):
         pages=[self.page('a'),self.page('b'),self.page('a'),self.page('b'),self.page('a')]
@@ -158,12 +183,14 @@ class BossPagingTests(unittest.TestCase):
         self.assertEqual(state['phase'],'list')
         self.assertEqual(state['filters'],['青岛','实习'])
 
-    def test_existing_attempt_is_skipped_after_reloading_list(self):
-        self.store.begin_attempt(self.run_id,'测试公司','https://www.zhipin.com/job_detail/match.html',
-                                 'MCU实习','boss','match')
+    def test_attempt_from_another_run_is_skipped_after_reloading_list(self):
+        previous = self.store.create_run(self.config, '测试跨轮去重')
+        attempt = self.store.begin_attempt(previous,'测试公司','https://www.zhipin.com/job_detail/match.html',
+                                           'MCU实习','boss','match')
         with patch('job_assistant.boss_script.browser_action',return_value=self.page('match')):
             self.assertFalse(self.step()['done'])
         self.assertEqual(self.store.conn.execute('SELECT COUNT(*) FROM attempts').fetchone()[0],1)
+        self.assertEqual(self.store.one('attempts', attempt)['status'], 'in_progress')
         self.assertEqual(json.loads(self.state_path.read_text(encoding='utf-8'))['phase'],'next')
 
     def test_contact_limit_does_not_navigate_or_create_more_actions(self):
@@ -197,7 +224,8 @@ class BossPagingTests(unittest.TestCase):
 
     def test_script_refreshes_before_greet_and_passes_actual_observation(self):
         pages=[self.page('match'),{**self.page('match'),'source_card':self.page('match')['cards'][0]},
-               {**self.page('match'),'heading':'MCU实习','observation_id':'current-facts'},self.page('match')]
+               self.page('match', url='https://www.zhipin.com/job_detail/match.html', heading='MCU实习',
+                         detail_greet_state='ready', observation_id='current-facts'),self.page('match')]
         def sent(store,run,attempt,action,**params):
             with store.conn:store.conn.execute("UPDATE actions SET status='succeeded' WHERE id=?",(action,))
             return {'sent':True}
@@ -206,6 +234,31 @@ class BossPagingTests(unittest.TestCase):
         self.assertEqual([call.args[2] for call in browser.call_args_list],['observe','open_job','observe','return'])
         self.assertEqual(greet.call_args.kwargs,{'observation_id':'current-facts','expected_target':'script-target'})
         self.assertEqual(json.loads(self.state_path.read_text(encoding='utf-8'))['phase'],'list')
+
+    def test_script_skips_known_closed_or_contacted_job_before_preparing(self):
+        for state, label in [('unavailable','停止招聘'), ('contacted','已沟通')]:
+            url = f'https://www.zhipin.com/job_detail/{state}.html'
+            selected = self.page('match')
+            selected['cards'][0].update(key=state, url=url)
+            original = self.page('match', url=url, detail_greet_state=state)
+            with patch('job_assistant.boss_script.browser_action', side_effect=[selected, selected, original, selected]) as browser:
+                self.step(); self.step()
+                self.assertIn(label, self.step()['message'])
+                self.assertEqual(browser.call_args.args[2], 'return')
+                script = json.loads(self.state_path.read_text(encoding='utf-8'))
+                self.assertEqual(script['phase'],'list')
+                self.assertEqual(self.store.one('attempts', script['attempt'])['status'],'skipped')
+        self.assertEqual(self.store.conn.execute('SELECT COUNT(*) FROM actions').fetchone()[0], 0)
+
+    def test_script_wrong_detail_or_ambiguous_action_does_not_record_a_send(self):
+        selected = self.page('match')
+        wrong = self.page('match', url='https://www.zhipin.com/job_detail/other.html', heading='MCU实习', detail_greet_state='ready')
+        ambiguous = self.page('match', url='https://www.zhipin.com/job_detail/match.html', heading='MCU实习', detail_greet_state='unknown')
+        with patch('job_assistant.boss_script.browser_action', side_effect=[selected, selected, wrong, ambiguous]):
+            self.step(); self.step()
+            with self.assertRaisesRegex(ValueError, '离开本轮目标岗位'): self.step()
+            with self.assertRaisesRegex(ValueError, '唯一沟通按钮'): self.step()
+        self.assertEqual(self.store.conn.execute('SELECT COUNT(*) FROM actions').fetchone()[0], 0)
 
     def test_recover_after_committed_send_before_return_never_resends(self):
         with patch('job_assistant.boss_script.browser_action', return_value=self.page('match')):
@@ -229,13 +282,32 @@ class BossPagingTests(unittest.TestCase):
         frame.parent.mkdir()
         Image.new('RGB', (8, 8)).save(frame)
         observation = {**self.page('match'), 'sent': True, 'frame_file': str(frame)}
+        def sent(*args, claim_greet, **kwargs):
+            claim_greet()
+            return observation
         with patch('job_assistant.agent_browser.check_current_source'), \
-                patch('job_assistant.agent_browser.browser_call', return_value=observation), \
+                patch('job_assistant.agent_browser.browser_call', side_effect=sent), \
                 patch.object(self.store, 'evidence', wraps=type(self.store).evidence.__get__(self.store)), \
                 patch.object(self.store, 'export', side_effect=PermissionError('workbook open')) as export:
             self.assertTrue(greet(self.store, self.run_id, attempt, action)['sent'])
         export.assert_not_called()
         self.assertEqual(self.store.one('actions', action)['status'], 'succeeded')
+
+    def test_greet_distinguishes_no_dispatch_from_possible_delivery(self):
+        from job_assistant.boss_script import greet
+        attempt = self.store.begin_attempt(self.run_id, '测试公司', 'https://www.zhipin.com/job_detail/match.html', 'MCU实习', 'boss', 'match')
+        for should_claim, expected in [(False,'not_done'), (True,'uncertain')]:
+            action = self.store.prepare_action(self.run_id, attempt, 'greet', 'match', {})
+            def failure(*args, claim_greet, check, **kwargs):
+                check()
+                if should_claim:
+                    claim_greet()
+                    check()
+                raise ValueError('模拟失败')
+            with patch('job_assistant.agent_browser.browser_call', side_effect=failure):
+                with self.assertRaisesRegex(ValueError,'模拟失败'):
+                    greet(self.store, self.run_id, attempt, action)
+            self.assertEqual(self.store.one('actions', action)['status'], expected)
 
     def test_verified_empty_listing_can_finish(self):
         from job_assistant.app_runs import recover_app
@@ -272,7 +344,7 @@ class BossPagingTests(unittest.TestCase):
         with patch('job_assistant.agent_browser.browser_call') as browser:
             with self.assertRaisesRegex(ValueError,'历史'):greet(self.store,self.run_id,attempt,action)
         browser.assert_not_called()
-        self.assertEqual(self.store.one('actions',action)['status'],'pending')
+        self.assertEqual(self.store.one('actions',action)['status'],'not_done')
 
     def test_read_only_browser_entry_cannot_send_messages_or_attachments(self):
         from job_assistant.boss_script import browser_action

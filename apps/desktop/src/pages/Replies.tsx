@@ -11,6 +11,11 @@ type Rule = {
   when: Record<string, unknown>;
   enabled: boolean;
 };
+type ReplySettings = {
+  rules: Rule[];
+  unknown_reply_mode: string;
+  ai_instructions?: string;
+};
 const categories = {
   availability: { label: "到岗时间", icon: CalendarDays },
   location: { label: "工作地点", icon: MapPin },
@@ -23,17 +28,19 @@ export function Replies() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [selected, select] = useState("");
   const [mode, setMode] = useState("human");
+  const [aiInstructions, setAiInstructions] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let active = true;
-    void request<{ rules: Rule[]; unknown_reply_mode: string }>("get_reply_settings")
+    void request<ReplySettings>("get_reply_settings")
       .then((value) => {
         if (!active) return;
         setRules(value.rules);
         setMode(value.unknown_reply_mode);
+        setAiInstructions(value.ai_instructions ?? "");
         setLoaded(true);
       })
       .catch((failure) => { if (active) setError(String(failure)); });
@@ -55,8 +62,11 @@ export function Replies() {
     setError("");
     setNotice("");
     try {
-      await request("save_reply_settings", { settings: { rules, unknown_reply_mode: mode } });
-      setNotice("已保存。新建任务会采用这份规则。");
+      const saved = await request<ReplySettings>("save_reply_settings", {
+        settings: { rules, unknown_reply_mode: mode, ai_instructions: aiInstructions },
+      });
+      setAiInstructions(saved.ai_instructions ?? "");
+      setNotice("已保存。");
     } catch (failure) { setError(String(failure)); }
     finally { setBusy(false); }
   };
@@ -70,7 +80,13 @@ export function Replies() {
         {[["human", "提醒我回答"], ["ai", "AI 根据资料拟答"]].map(([key, text]) =>
           <label key={key}><input type="radio" name="unknown-reply-mode" value={key} checked={mode === key}
             onChange={() => { setMode(key); setNotice(""); }} />{text}</label>)}
-        {mode === "ai" && <span className="muted">符合发送条件时可使用已核实的资料回复</span>}
+        <div className="settings-ai-instructions">
+          <label htmlFor="ai-reply-instructions">AI 回复规则</label>
+          <textarea id="ai-reply-instructions" rows={4} maxLength={4000} value={aiInstructions}
+            aria-describedby="ai-reply-instructions-help" placeholder="例如，回复简洁礼貌。到岗时间不确定时，交给我确认。"
+            onChange={(event) => { setAiInstructions(event.target.value); setNotice(""); }} />
+          <span id="ai-reply-instructions-help" className="muted">已启用 AI 拟答的任务会结合已核实的资料和最新保存的规则拟答。</span>
+        </div>
       </fieldset>
       <div className="settings-rules-split">
         <section className="settings-rule-list">
