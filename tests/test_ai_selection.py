@@ -9,7 +9,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'skills/job-search-assistant/scripts'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'apps/worker/scripts'))
 from job_assistant.ai_selection import selection_step, selection_context, accept_selection
 from job_assistant.app_decisions import advance_control
 from job_assistant.cli import prepare_config

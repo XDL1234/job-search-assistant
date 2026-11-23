@@ -18,8 +18,8 @@ const modes = [
 ] as const;
 
 const companyModes = [
-  [false, "仅填写，我来提交", "填写完停在当前网页，由你核对并提交。"],
-  [true, "填写并自动提交", "AI 填写并检查必填项后直接提交。"],
+  [false, "仅填写，我来提交", "每家公司填写完停在当前网页，由你核对并提交。助手继续填写下一家。"],
+  [true, "填写并自动提交", "AI 填写并检查必填项后直接提交。提交结果以网站回执为准。"],
 ] as const;
 
 type CompanyInspection = {
@@ -236,12 +236,12 @@ export function TaskSetup({
           {isBoss && <div>{browserReady ? <Check size={18} className="task-ok"/> : <Info size={18}/>}
             <strong>{browserReady ? "BOSS 标签已绑定" : "启动前需绑定 BOSS 标签"}</strong></div>}
           <div>{preview.config.execution_mode === "script" || codexReady ? <Check size={18} className="task-ok"/> : <Info size={18}/>}
-            <strong>{preview.config.execution_mode === "script" ? "脚本无需连接 Codex" : codexReady ? "Codex 已连接" : "启动前需连接 Codex"}</strong></div>
-          <div className="task-confirm-next"><Info size={18}/>创建后到工作台启动</div>
+            <strong>{preview.config.execution_mode === "script" ? "脚本无需连接 Codex" : codexReady ? "Codex 已连接" : isBoss ? "启动前需连接 Codex" : "可先打开网页，填写前连接 Codex"}</strong></div>
+          <div className="task-confirm-next"><Info size={18}/>{isBoss ? "创建后到工作台启动" : "在工作台打开本批网页，完成登录后开始填写"}</div>
         </aside>
       </div>
       <div className="task-setup-footer">
-        <span><Info size={18}/>{initialRun ? "保存后返回工作台，由你启动任务" : "创建任务后，在工作台启动执行"}</span>
+        <span><Info size={18}/>{isBoss ? initialRun ? "保存后返回工作台，由你启动任务" : "创建任务后，在工作台启动执行" : "工作台按表格顺序处理选中的公司"}</span>
         <div><Button variant="secondary" disabled={busy} onClick={() => setPreview(null)}>返回修改</Button>
           <Button disabled={busy} onClick={() => void createTask()}>{initialRun ? "确认修改" : "确认并创建任务"}</Button></div>
       </div>

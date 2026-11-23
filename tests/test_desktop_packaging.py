@@ -104,7 +104,8 @@ class DesktopPackagingTests(unittest.TestCase):
                     build.verify_reused_resources()
 
     def test_resource_manifest_rejects_connection_credentials_and_test_capture(self):
-        for filename in ['agent-browser.json', 'browser-bridge.json', 'security-smoke.json', 'records.db', 'capture.jpg']:
+        for filename in ['agent-browser.json', 'browser-bridge.json', 'security-smoke.json', 'records.db',
+                         'records.sqlite3-wal', 'records.sqlite3-shm', 'records.db-journal', 'capture.jpg']:
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 (root/'agent-browser').mkdir()
@@ -112,9 +113,20 @@ class DesktopPackagingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     build.resource_manifest(root)
 
+    def test_nested_resource_manifest_is_covered_by_checksums(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root/'worker').mkdir()
+            nested = root/'worker/resource-manifest.json'
+            nested.write_bytes(b'{}')
+            (root/'resource-manifest.json').write_bytes(b'{}')
+            self.assertEqual(build.resource_manifest(root), [
+                {'path': 'worker/resource-manifest.json', 'size': 2, 'sha256': build.file_hash(nested)}
+            ])
+
     def test_reuse_checks_current_skill_fingerprint(self):
         import sys
-        sys.path.insert(0, str(ROOT/'skills/job-search-assistant/scripts'))
+        sys.path.insert(0, str(ROOT/'apps/worker/scripts'))
         from job_assistant.bootstrap import tree_hash
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -122,7 +134,7 @@ class DesktopPackagingTests(unittest.TestCase):
             (root/'worker').mkdir()
             worker = root/'worker/worker.exe'
             worker.write_bytes(b'worker')
-            metadata = {'skill_sha256': tree_hash(ROOT/'skills/job-search-assistant'),
+            metadata = {'source_sha256': tree_hash(ROOT/'apps/worker'),
                         'worker_sha256': build.file_hash(worker), 'pyinstaller': build.PYINSTALLER_VERSION}
             (root/'worker/build-manifest.json').write_text(json.dumps(metadata))
             previous = {'codex': build.CODEX_VERSION, 'agent_browser': runtime, 'files': build.resource_manifest(root)}
@@ -132,7 +144,7 @@ class DesktopPackagingTests(unittest.TestCase):
             with patch.object(build, 'RESOURCES', root), patch.object(build.subprocess, 'check_output', side_effect=output):
                 self.assertEqual(build.verify_reused_resources(), runtime)
                 with patch('job_assistant.bootstrap.tree_hash', return_value='changed-after-freeze'):
-                    with self.assertRaisesRegex(ValueError, 'Skill 源码'):
+                    with self.assertRaisesRegex(ValueError, '工作进程源码'):
                         build.verify_reused_resources()
 
     def test_bundle_configuration_replaces_extension_with_native_runtime(self):

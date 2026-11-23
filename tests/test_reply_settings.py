@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'skills/job-search-assistant/scripts'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'apps/worker/scripts'))
 from job_assistant.store import Store
 from job_assistant.app_service import handle_app_request
 

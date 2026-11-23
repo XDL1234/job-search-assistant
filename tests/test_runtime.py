@@ -1,11 +1,10 @@
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/worker/scripts'))
 
 
 class DesktopGuardTests(unittest.TestCase):
@@ -37,45 +36,27 @@ class BootstrapTests(unittest.TestCase):
 
     def test_dependency_manifest_rejects_floating_or_unverified_sources(self):
         from job_assistant.bootstrap import validate_manifest
-        valid = {'schema_version': 1, 'python': '>=3.11', 'packages': [{'name': 'Pillow', 'version': '11.3.0'}], 'skills': []}
+        valid = {'schema_version': 1, 'python': '>=3.11', 'packages': [{'name': 'Pillow', 'version': '11.3.0'}]}
         validate_manifest(valid)
         bad = {**valid, 'packages': [{'name': 'Pillow', 'version': 'latest'}]}
         with self.assertRaises(ValueError):
             validate_manifest(bad)
-        bad = {**valid, 'skills': [{'name': 'computer-use', 'url': 'https://unknown.example/install.ps1'}]}
+        bad = {**valid, 'sources': ['https://unknown.example/install.ps1']}
         with self.assertRaises(ValueError):
             validate_manifest(bad)
 
-    def test_local_skill_install_does_not_overwrite_different_existing_skill(self):
-        from job_assistant.bootstrap import install_skill
+    def test_packaging_includes_worker_sources_and_excludes_user_data_and_old_plugin_resources(self):
+        from job_assistant.bootstrap import source_files
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, destination = root / 'source', root / 'installed'
-            source.mkdir()
-            (source / 'SKILL.md').write_text('original', encoding='utf-8')
-            first = install_skill(source, destination)
-            self.assertEqual(first['status'], 'installed')
-            self.assertEqual(install_skill(source, destination)['status'], 'already_installed')
-            (source / 'SKILL.md').write_text('changed', encoding='utf-8')
-            with self.assertRaises(ValueError):
-                install_skill(source, destination)
-            self.assertEqual((destination / 'SKILL.md').read_text(), 'original')
-
-    def test_install_excludes_runtime_data_even_if_source_contains_it(self):
-        from job_assistant.bootstrap import install_skill
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'source'
-            source.mkdir()
-            (source / 'SKILL.md').write_text('skill')
-            (source / 'data').mkdir()
-            (source / 'data/resume.pdf').write_bytes(b'private')
-            (source / 'scripts').mkdir()
-            (source / 'scripts/records.sqlite3').write_bytes(b'private')
-            destination = root / 'installed'
-            install_skill(source, destination)
-            self.assertFalse((destination / 'data').exists())
-            self.assertFalse((destination / 'scripts/records.sqlite3').exists())
+            bundled = {'dependencies.json', 'assets/simulation.html', 'scripts/run.py'}
+            excluded = {'SKILL.md', 'agents/openai.yaml', 'data/resume.pdf', 'scripts/records.sqlite3',
+                        'assets/dashboard/index.html'}
+            for relative in bundled | excluded:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'fixture')
+            self.assertEqual({path.relative_to(root).as_posix() for path in source_files(root)}, bundled)
 
 
 if __name__ == '__main__':

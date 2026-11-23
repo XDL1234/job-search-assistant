@@ -4,7 +4,7 @@ import sys
 import unittest
 from unittest.mock import Mock, call
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/worker/scripts'))
 from job_assistant.agent_browser import Browser
 from job_assistant.boss_filter_dom import (
     FilterControls, apply_filters, platform_scope, same_city, selected_city_code, verify_geography_scope,

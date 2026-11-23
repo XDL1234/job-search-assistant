@@ -270,10 +270,40 @@ async fn run_real_chrome_preview(hidden_target: bool, headed: bool) {
             let pixels=synthetic_pixel_check(&artifacts).await?;
             let green=|color:&Value|color.as_array().is_some_and(|channels|channels.len()==3 && channels.iter().zip([18,166,84]).all(|(channel,target)|channel.as_i64().is_some_and(|value|(value-target).abs()<=3)));
             let marker_observed=green(&pixels["stream"]);
-            let diagnostic=json!({"hidden_target":true,"dom":dom,"stream_frame_received":after_change.is_some(),"stream_marker_observed":marker_observed,"pixels":pixels,"direct_capture_succeeded":capture_ok,"direct_capture_marker_observed":green(&pixels["direct_capture"]),"direct_capture_error":captured.as_ref().err(),"checks":checks});
+            let mut diagnostic=json!({"hidden_target":true,"dom":dom,"stream_frame_received":after_change.is_some(),"stream_marker_observed":marker_observed,"pixels":pixels,"direct_capture_succeeded":capture_ok,"direct_capture_marker_observed":green(&pixels["direct_capture"]),"direct_capture_error":captured.as_ref().err(),"checks":checks});
             std::fs::write(root.join("hidden-diagnostic.json"),serde_json::to_vec_pretty(&diagnostic).unwrap()).map_err(|_|"无法写隐藏页诊断")?;
             std::fs::write(root.join("synthetic-frames.json"),serde_json::to_vec(&artifacts).unwrap()).map_err(|_|"无法写合成帧证据")?;
             if !marker_observed {return Err(format!("隐藏页已确认DOM变化但原生流画面未更新；直接CDP取图成功={capture_ok}；诊断 {}",root.join("hidden-diagnostic.json").display()));}
+            if dom["hidden"] != true { return Err("取帧改变了隐藏标签的可见状态".into()); }
+            let pending = next_matching(&mut events, |event| event["type"] == "frame").await?;
+            if tokio::time::timeout(Duration::from_secs(2), next_matching(&mut events, |event| event["type"] == "frame")).await.is_ok() {
+                return Err("隐藏标签没有等待界面确认".into());
+            }
+            cdp_command(&browser_url,"Target.activateTarget",json!({"targetId":target})).await?;
+            cdp_page_command(&browser_url,Some(&target),"Runtime.evaluate",json!({"expression":"document.body.style.background='#b514a0'"})).await?;
+            runtime.ack_preview(&epoch, pending["seq"].as_u64().ok_or("缺少隐藏帧序号")?).await?;
+            tokio::time::timeout(Duration::from_secs(8), async {
+                loop {
+                    let frame = next_matching(&mut events, |event| event["type"] == "frame").await?;
+                    let bytes = STANDARD.decode(frame["data"].as_str().unwrap_or("")).map_err(|_|"可见帧内容无效")?;
+                    let image = image::load_from_memory(&bytes).map_err(|_|"可见帧图片无效")?.into_rgb8();
+                    let color = image.get_pixel(1, 1).0;
+                    runtime.ack_preview(&epoch, frame["seq"].as_u64().ok_or("缺少可见帧序号")?).await?;
+                    if color.into_iter().zip([181,20,160]).all(|(value,wanted)| u8::abs_diff(value,wanted)<=3) {
+                        return Ok::<(),String>(());
+                    }
+                }
+            }).await.map_err(|_|"隐藏标签切回前台后的画面未更新")??;
+            cdp_command(&browser_url,"Target.activateTarget",json!({"targetId":other["targetId"]})).await?;
+            // 给后台取帧一次机会，并让该帧继续等待界面确认。
+            next_matching(&mut events, |event| event["type"] == "frame").await?;
+            cdp_page_command(&browser_url,Some(&target),"Page.navigate",json!({"url":"data:text/html,<h1>outside-scope</h1>"})).await?;
+            let error = next_matching(&mut events, |event| event["type"] == "status" && event["state"] == "error").await?;
+            if !error["message"].as_str().is_some_and(|value| value.contains("授权")) {
+                return Err("隐藏标签离开授权域时未提示离域".into());
+            }
+            checks.extend(["hidden_target_remained_hidden", "hidden_frame_requires_ack", "restored_visible_frame", "offsite_stopped_while_unacked"]);
+            diagnostic["checks"] = json!(checks);
             return Ok(diagnostic);
         }
         let first=next_matching(&mut events,|event|event["type"]=="frame").await.map_err(|error|format!("首次后台画面：{error}"))?;

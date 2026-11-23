@@ -13,7 +13,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-sys.path.insert(0, str(ROOT / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(ROOT / 'apps/worker/scripts'))
 from desktop_dev import environment
 from job_assistant.app_runs import preview_demo, start_run
 from job_assistant.store import Store

@@ -66,6 +66,16 @@ fn chrome_path() -> Option<PathBuf> {
 
 #[cfg(windows)]
 pub(crate) async fn endpoint(profile: &Path, launch: bool) -> Result<Option<String>, String> {
+    endpoint_with_start_page(profile, launch, "https://www.zhipin.com/web/geek/job").await
+}
+
+#[cfg(windows)]
+pub(crate) async fn company_endpoint(profile: &Path, launch: bool) -> Result<Option<String>, String> {
+    endpoint_with_start_page(profile, launch, "about:blank").await
+}
+
+#[cfg(windows)]
+async fn endpoint_with_start_page(profile: &Path, launch: bool, start_page: &str) -> Result<Option<String>, String> {
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
     match std::fs::symlink_metadata(profile) {
         Ok(metadata)
@@ -101,7 +111,7 @@ pub(crate) async fn endpoint(profile: &Path, launch: bool) -> Result<Option<Stri
             "--no-first-run",
             "--no-default-browser-check",
             "--new-window",
-            "https://www.zhipin.com/web/geek/job",
+            start_page,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -130,6 +140,9 @@ pub(crate) async fn endpoint(_profile: &Path, launch: bool) -> Result<Option<Str
         Ok(None)
     }
 }
+
+#[cfg(not(windows))]
+pub(crate) use endpoint as company_endpoint;
 
 #[cfg(test)]
 mod tests {

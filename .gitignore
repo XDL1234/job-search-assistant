@@ -1,4 +1,5 @@
 .verification/
+.codegraph/
 dist/
 __pycache__/
 *.pyc

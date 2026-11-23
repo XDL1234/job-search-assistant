@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'skills/job-search-assistant/scripts'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'apps/worker/scripts'))
 from job_assistant.store import Store
 from job_assistant.cli import prepare_config
 from job_assistant.migrations import migrate_app
@@ -74,6 +74,22 @@ class BossMessagesTests(unittest.TestCase):
         self.assertEqual(state['phase'],'respond')
         self.assertEqual(self.store.one('actions',state['action_id'])['status'],'pending')
         with self.assertRaisesRegex(ValueError,'重复'):decide_message(self.store,self.run,'data-id:hr1','data-mid:1')
+
+    def test_open_excel_report_does_not_interrupt_message_or_idle_poll(self):
+        from PIL import Image
+        data = io.BytesIO()
+        Image.new('RGB', (2, 2)).save(data, format='PNG')
+        receipt = {'url': 'https://www.zhipin.com/web/geek/chat',
+                   'screenshot': base64.b64encode(data.getvalue()).decode(), 'sent': True}
+        with patch.object(self.store, 'export', side_effect=PermissionError('报告已打开')), \
+                patch('job_assistant.boss_script.browser_action', return_value=self.observation()), \
+                patch('job_assistant.agent_browser.browser_call', return_value=receipt) as send:
+            watch_step(self.store, self.run)
+            action = read_watch_state(self.store, self.run)['action_id']
+            watch_step(self.store, self.run)
+            watch_step(self.store, self.run)
+        send.assert_called_once()
+        self.assertEqual(self.store.one('actions', action)['status'], 'succeeded')
 
     def test_interview_in_any_new_message_locks_whole_conversation(self):
         observation=self.observation('薪资是税前5000元/月，你能接受吗？',key='data-mid:2')

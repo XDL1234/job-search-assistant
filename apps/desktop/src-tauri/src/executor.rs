@@ -66,6 +66,7 @@ struct Active {
     selection: Option<SelectionTurn>,
     usage_resumed: bool,
     company_web: bool,
+    company_turn_rows: u64,
 }
 #[derive(Clone)]
 struct SelectionTurn {
@@ -84,6 +85,33 @@ fn completed_agent_message<'a>(params: &'a Value, turn_id: &str) -> Option<&'a s
         return None;
     }
     params["item"]["text"].as_str().filter(|text| !text.trim().is_empty())
+}
+
+fn company_batch_result(result: &Value) -> Result<(&'static str, String), String> {
+    if result["state"] == "paused" {
+        let message = result["message"].as_str().filter(|message| !message.is_empty())
+            .ok_or("公司清单已暂停，缺少等待原因")?;
+        return Ok(("paused", message.to_owned()));
+    }
+    match (result["completed"].as_bool(), result["pending_count"].as_u64()) {
+        (Some(true), Some(0)) => {
+            let skipped = result["historical_count"].as_u64().unwrap_or_default();
+            let details = if skipped > 0 { format!("其中 {skipped} 家已有历史申请，本轮已跳过。") } else { String::new() };
+            Ok(("completed", result["message"].as_str().map(str::to_owned)
+                .unwrap_or_else(|| format!("本轮公司清单已处理完毕。{details}各公司的结果见本轮队列。"))))
+        }
+        (Some(false), Some(count)) if count > 0 => {
+            let companies = result["pending_companies"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).take(3).collect::<Vec<_>>().join("、");
+            let examples = if companies.is_empty() { String::new() } else { format!("（{companies}）") };
+            Err(format!("本轮还有 {count} 家公司未处理完{examples}，任务已暂停，可从工作台恢复。"))
+        }
+        _ => Err("无法核实本轮公司清单的处理结果，任务已暂停。".into()),
+    }
+}
+
+fn remaining_company_turn(result: &Value, initial: u64) -> Option<u64> {
+    result["eligible_count"].as_u64().filter(|count| result["state"] == "incomplete" && *count > 0 && *count < initial)
 }
 
 fn web_profile_paths(value: &Value, path: &str, paths: &mut Vec<String>, depth: usize) {
@@ -539,15 +567,19 @@ impl ExecutorCoordinator {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .is_none_or(|a| a.run != run || !a.gate.busy || a.gate_is_cancelled())
+                .is_none_or(|a| a.run != run || !a.is_running())
     }
 
-    pub async fn start(self: &Arc<Self>, app: AppHandle, run: String, watch_only: bool) -> Result<(), String> {
+    pub async fn start(self: &Arc<Self>, app: AppHandle, run: String, action: &str) -> Result<(), String> {
         let _start = self.start_lock.try_lock().map_err(|_| "正在启动另一任务")?;
         let context = self
             .worker
             .call("execution_context", json!({"run_id":run}))
             .await?;
+        let company = context["config"]["simulation"] != true && context["config"]["channels"] == json!(["web"]);
+        let prepare_company = action == "prepare_company";
+        if prepare_company && !company { return Err("只有公司网申填写任务可以批量打开网页".into()); }
+        let watch_only = action == "watching";
         if watch_only
             && (context["config"]["simulation"] == true
                 || context["config"]["channels"] != json!(["boss"])
@@ -557,7 +589,7 @@ impl ExecutorCoordinator {
             return Err("只有已暂停或完成的真实 BOSS 任务可以开启消息值守".into());
         }
         let watching = watch_only || context["run"]["status"] == "watching";
-        if !watching && context["config"]["execution_mode"] != "script" && self.status().state != "ready" {
+        if !company && !watching && context["config"]["execution_mode"] != "script" && self.status().state != "ready" {
             return Err("请先连接 Codex".into());
         }
         {
@@ -574,12 +606,13 @@ impl ExecutorCoordinator {
                 control_generation: None,
                 selection: None,
                 usage_resumed: false,
-                company_web: context["config"]["simulation"] != true && context["config"]["channels"] == json!(["web"]),
+                company_web: company,
+                company_turn_rows: 0,
             });
         }
         let runtime = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = runtime.start_inner(&app, &run, watching).await {
+            if let Err(error) = runtime.start_inner(&app, &run, context, watching, prepare_company).await {
                 runtime.loop_failed(&app, &run, &error).await;
             }
         });
@@ -604,11 +637,7 @@ impl ExecutorCoordinator {
         }, on_event).await
     }
 
-    async fn start_inner(self: &Arc<Self>, app: &AppHandle, run: &str, watching: bool) -> Result<(), String> {
-        let context = self
-            .worker
-            .call("execution_context", json!({"run_id":run}))
-            .await?;
+    async fn start_inner(self: &Arc<Self>, app: &AppHandle, run: &str, context: Value, watching: bool, prepare_company: bool) -> Result<(), String> {
         if context["config"]["simulation"] != true && context["config"]["channels"] != json!(["web"])
             && context["config"]["channels"].as_array().is_some_and(|channels| channels.contains(&json!("web"))) {
             return Err("请将公司网申与 BOSS 投递分别创建任务".into());
@@ -638,11 +667,18 @@ impl ExecutorCoordinator {
         if self.cancelled(run) {
             return Err("任务已暂停".into());
         }
-        self.worker
+        let activation = self.worker
             .call("activate_run", json!({"run_id":run}))
             .await?;
         if watching && context["config"]["simulation"] != true {
             return self.run_watch(app, run).await;
+        }
+        if context["config"]["simulation"] != true && context["config"]["channels"] == json!(["web"]) {
+            let generation = activation["control_generation"].as_i64().ok_or("缺少网申任务代际")?;
+            if !self.prepare_company_turn(app, run, generation, prepare_company).await? { return Ok(()); }
+            let context = self.worker.call("execution_context", json!({"run_id":run})).await?;
+            if self.cancelled(run) || context["control_generation"] != generation { return Err("任务状态已变化，请重新检查".into()); }
+            return self.start_ai_turn(app, run, context).await;
         }
         if boss {
             let _tool = self.tool_lock.lock().await;
@@ -661,6 +697,63 @@ impl ExecutorCoordinator {
         let fresh_context = self.worker.call("execution_context", json!({"run_id":run})).await?;
         self.start_ai_turn(app, run, fresh_context).await
     }
+    async fn prepare_company_turn(&self, app: &AppHandle, run: &str, generation: i64, prepare_only: bool) -> Result<bool, String> {
+        let _tool = self.tool_lock.lock().await;
+        if self.cancelled(run) { return Err("任务已暂停".into()); }
+        let request = |request: Value| json!({"run_id":run, "control_generation":generation,"request":request});
+        let batch = self.worker.call("company_web", request(json!({"operation":"prepare_batch","prepare_only":prepare_only}))).await?;
+        let rows = batch["rows"].as_array().ok_or("缺少网申队列")?;
+        let occupied = batch["occupied_targets"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let prepare = prepare_only || batch["phase"] == "prepare";
+        let phase = if prepare { "prepare" } else { "check" };
+        self.emit(app, run, "message", json!({"text":if prepare { "按公司表顺序打开本批网页。" } else { "正在检查本批网页的登录状态和填写入口。" }}));
+        let checks = if prepare {
+            self.company_web.prepare_batch(&self.worker, run, generation, rows, occupied).await?
+        } else {
+            self.company_web.check_batch(&self.worker, run, generation, rows, occupied).await?
+        };
+        if self.cancelled(run) { return Err("任务已暂停".into()); }
+        let result = self.worker.call("company_web", request(json!({
+            "operation":"record_checks","phase":phase,"checks":checks
+        }))).await?;
+        if self.cancelled(run) { return Err("任务已暂停".into()); }
+        let message = result["message"].as_str().unwrap_or_default();
+        match result["state"].as_str() {
+            Some(state @ ("paused" | "completed")) => {
+                self.finish_company_turn(app, run, state, message);
+                Ok(false)
+            }
+            Some("running") if !prepare && result["eligible_count"].as_u64().is_some_and(|n| n > 0) => {
+                if self.status().state != "ready" {
+                    return Err("网页已检查，有可填写的公司。请连接 Codex 后点击「继续检查」，已打开的网页会保留。".into());
+                }
+                if let Some(active) = self.active.lock().unwrap().as_mut().filter(|a| a.run == run) {
+                    active.company_turn_rows = result["eligible_count"].as_u64().unwrap_or_default();
+                }
+                self.emit(app, run, "message", json!({"text":message}));
+                Ok(true)
+            }
+            _ => Err("无法确定本批网页是否可以填写，请继续检查。".into()),
+        }
+    }
+
+    fn finish_company_turn(&self, app: &AppHandle, run: &str, state: &str, message: &str) {
+        if let Some(active) = self.active.lock().unwrap().as_mut().filter(|active| active.run == run) {
+            active.gate.finished();
+            active.thread = None;
+        }
+        self.company_web.clear_preview(run);
+        if !message.is_empty() { self.emit(app, run, "message", json!({"text":message})); }
+        self.emit(app, run, "state", json!({"state":state}));
+    }
+
+    pub(crate) async fn company_focus_tab(&self, run: &str, source_row: i64) -> Result<(), String> {
+        let _tool = self.tool_lock.lock().await;
+        if self.closing.load(Ordering::SeqCst) { return Err("应用正在关闭".into()); }
+        let row = self.worker.call("company_queue_row", json!({"run_id":run,"source_row":source_row})).await?;
+        self.company_web.focus_row(&self.worker, run, source_row, &row).await
+    }
+
     async fn start_ai_turn(self: &Arc<Self>, app: &AppHandle, run: &str, context: Value) -> Result<(), String> {
         let client = self.get_client().await?;
         let shared = self.shared_login.load(Ordering::SeqCst);
@@ -705,15 +798,16 @@ impl ExecutorCoordinator {
         if self.cancelled(run) {
             return Err("任务已暂停".into());
         }
-        let text=format!("使用 $job-search-assistant 完成本轮已确认任务。应用已准备依赖与授权，仅使用 job_action。配置与资料：{}。先 status 核查未决动作；simulation=true 按模拟流程。若run.status=watching只处理当前新消息，禁止新增沟通；AI 拟答遵守本回合的 ai_reply_instructions，仍须使用已核实资料并满足预设规则与发送限制。真实 BOSS 优先 browser action=observe 读取标签页，按 employment_type 和 boss_mode 筛选。官网仅操作 company_rows 授权网站，逐字段留截图。到上限或页面受限就停止，面试整条转人工。不要创造额外要求或话术。",context);
         let input = if company_web {
             let mut paths = Vec::new();
             web_profile_paths(&context["profile"], "profile", &mut paths, 0);
             json!([{"type":"text","text":format!(
-                "执行当前公司网申任务。先用 job_action operation=web,action=scope 取得已授权公司和岗位，再逐家处理。已保存的个人资料路径（仅用于字段匹配，原值由本机填写）：{}。遇到需要人工处理的步骤先 handoff，再处理下一家公司。完成后按页面状态汇报。",
+                "执行本轮公司网申填写。用 job_action operation=web,action=scope 取得本次可处理的行，按原表顺序处理。已保存的资料路径（只用于字段匹配，原值由本机填写）：{}。每家填写完成或等待用户后继续下一家，直到本次可处理行耗尽。只按 scope 的 web_submit 授权处理最后的提交按钮。",
                 json!(paths))}])
         } else {
-            json!([{"type":"skill","name":"job-search-assistant","path":context["skill_path"]},{"type":"text","text":text}])
+            json!([{"type":"text","text":format!(
+                "执行本轮已授权的桌面任务，仅使用 job_action。应用配置和资料如下。{}。先用 status 核查未决动作。simulation=true 时按本地模拟流程。run.status=watching 时只处理当前新消息，按 ai_reply_instructions 和回复规则拟答，面试整条转人工。",
+                context)}])
         };
         let result=client.request("turn/start",json!({"threadId":thread_id,"input":input})).await?;
         let turn = result["turn"]["id"]
@@ -794,7 +888,7 @@ impl ExecutorCoordinator {
         let thread_id=thread["thread"]["id"].as_str().ok_or("缺少精筛会话编号")?.to_string();
         {
             let mut active=self.active.lock().unwrap();
-            let item=active.as_mut().filter(|a|a.run==run && a.gate.busy && !a.gate_is_cancelled()).ok_or("任务已暂停")?;
+            let item=active.as_mut().filter(|a|a.run==run && a.is_running()).ok_or("任务已暂停")?;
             item.thread=Some(thread_id.clone());
             item.control_generation=Some(control_generation);
             item.selection=Some(SelectionTurn{decision_id,answer:None});
@@ -1064,7 +1158,7 @@ impl ExecutorCoordinator {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .filter(|a| a.thread.is_some())
+                .filter(|a| a.is_running() && a.thread.is_some())
                 .map(|a| a.run.clone());
             if let Some(run) = run {
                 self.fail(&app, &run, "Codex 中断，已暂停任务；未决操作需核查")
@@ -1088,13 +1182,11 @@ impl ExecutorCoordinator {
             self.usage.lock().unwrap().record(params);
             return;
         }
-        let scope = self
-            .active
-            .lock()
-            .unwrap()
-            .as_ref()
-            .filter(|a| a.thread.as_deref() == params["threadId"].as_str())
-            .map(|a| a.run.clone());
+        let scope = params["threadId"].as_str().and_then(|thread| {
+            self.active.lock().unwrap().as_ref()
+                .filter(|a| a.gate.busy && a.thread.as_deref() == Some(thread))
+                .map(|a| a.run.clone())
+        });
         if method == "item/tool/call" {
             if let Some(run)=scope.as_deref().filter(|run|self.active.lock().unwrap().as_ref()
                 .is_some_and(|a|a.run==*run && a.selection.is_some())) {
@@ -1178,20 +1270,56 @@ impl ExecutorCoordinator {
                 self.emit(&app, &run, "message", json!({"text":text}));
             }
         } else if method == "turn/completed" {
-            let matches = {
-                let a = self.active.lock().unwrap();
-                a.as_ref()
-                    .is_some_and(|a| a.gate.turn_id.as_deref() == params["turn"]["id"].as_str())
+            let (company_web, control_generation) = {
+                let Some(turn) = params["turn"]["id"].as_str() else { return; };
+                let mut current = self.active.lock().unwrap();
+                let Some(active) = current.as_mut().filter(|a| a.run == run && a.gate.turn_id.as_deref() == Some(turn))
+                    else { return; };
+                if active.retire_cancelled_turn(params["threadId"].as_str().unwrap_or_default(), turn) {
+                    return;
+                }
+                active.gate.turn_id = None;
+                (active.company_web, active.control_generation)
             };
-            if !matches {
-                return;
-            }
-            if let Some(active)=self.active.lock().unwrap().as_mut().filter(|a|a.run==run) {
-                active.gate.turn_id=None;
-            }
             self.persist_usage();
             if let Some(error) = turn_failure(&params["turn"]) {
                 self.fail(&app, &run, &error).await;
+                return;
+            }
+            if company_web {
+                let _tool = self.tool_lock.lock().await;
+                let result = self.worker.call("company_web", json!({
+                    "run_id":run, "control_generation":control_generation, "request":{"operation":"finish_batch"}
+                })).await;
+                if let Ok(batch) = &result {
+                    // 模型可在完成一家后自然结束。只有台账确认本批剩余数减少才自动接续。
+                    let advance = self.active.lock().unwrap().as_mut().filter(|a| a.run == run && a.is_running())
+                        .and_then(|active| {
+                            let left = remaining_company_turn(batch, active.company_turn_rows)?;
+                            active.company_turn_rows = left;
+                            active.thread = None;
+                            Some(left)
+                        });
+                    if let Some(left) = advance {
+                        self.emit(&app, &run, "message", json!({"text":format!("本批还有 {left} 家可填写，继续按表格顺序处理。")}));
+                        let runtime = self.clone();
+                        tokio::spawn(async move {
+                            let resume = async {
+                                let context = runtime.worker.call("execution_context",json!({"run_id":run})).await?;
+                                if runtime.cancelled(&run) || context["control_generation"].as_i64() != control_generation {
+                                    return Err("任务已暂停或变更".into());
+                                }
+                                runtime.start_ai_turn(&app,&run,context).await
+                            }.await;
+                            if let Err(error) = resume { runtime.loop_failed(&app,&run,&error).await; }
+                        });
+                        return;
+                    }
+                }
+                match result.and_then(|value| company_batch_result(&value)) {
+                    Ok((state, message)) => self.finish_company_turn(&app, &run, state, &message),
+                    Err(error) => self.loop_failed(&app, &run, &error).await,
+                }
                 return;
             }
             let selection={
@@ -1282,16 +1410,6 @@ impl ExecutorCoordinator {
                 });
                 return;
             }
-            let company_web = context.as_ref().is_ok_and(|context| {
-                context["config"]["channels"] == json!(["web"]) && context["config"]["simulation"] != true
-            });
-            if company_web && !self.cancelled(&run) {
-                if let Some(company) = self.company_web.unfinished_company(&run).await {
-                    self.fail(&app, &run, &format!("AI 已结束本次执行，{company} 仍有未完成的步骤。任务已暂停，可从工作台恢复。")).await;
-                    return;
-                }
-                self.emit(&app, &run, "message", json!({"text":"AI 已结束本次执行，已处理结果见本轮队列。"}));
-            }
             let _ = self.worker.pause(&run).await;
             {
                 if let Some(a) = self.active.lock().unwrap().as_mut() {
@@ -1337,7 +1455,6 @@ impl ExecutorCoordinator {
                 })
                 .map(|a| (a.run.clone(), a.control_generation, a.selection.clone(), a.company_web))
         };
-        let mut manual_ready = false;
         let result: Result<Value, String> = async {
             let (run, control_generation, selection, company_web) = scope.as_ref().ok_or("任务未运行或已经暂停")?;
             if selection.is_some() { return Err("纯岗位判断不授权任何工具".into()); }
@@ -1351,10 +1468,7 @@ impl ExecutorCoordinator {
             )
             .map_err(|e| e.to_string())?;
             if *company_web && request["operation"] == "web" {
-                let ready = request["action"] == "ready";
-                let result = self.company_web.call(&self.worker, run, control_generation.ok_or("网申任务已失效")?, request).await;
-                manual_ready = ready && result.is_ok();
-                return result;
+                return self.company_web.call(&self.worker, run, control_generation.ok_or("网申任务已失效")?, request).await;
             }
             if *company_web && request["operation"] != "status" {
                 return Err("公司网申请使用 operation=web 的受控浏览器工具".into());
@@ -1385,27 +1499,6 @@ impl ExecutorCoordinator {
             return;
         }
         if let Some((run, _, _, _)) = scope {
-            if manual_ready {
-                self.company_web.clear_preview(&run);
-                let _ = self.worker.call("bind_session", json!({"run_id":run,"thread_id":null,"state":"idle"})).await;
-                let thread = p["threadId"].as_str().unwrap_or_default().to_owned();
-                let turn = p["turnId"].as_str().unwrap_or_default().to_owned();
-                let retired = self.active.lock().unwrap().as_mut().filter(|active| active.run == run)
-                    .is_some_and(|active| {
-                        active.gate.cancel();
-                        active.retire_cancelled_turn(&thread, &turn)
-                    });
-                self.persist_usage();
-                self.emit(&app, &run, "message", json!({"text":"已填写，等待你在当前网页确认并提交。"}));
-                self.emit(&app, &run, "state", json!({"state":"paused"}));
-                if retired {
-                    tokio::spawn(async move {
-                        let _ = source.request_with_timeout("turn/interrupt", json!({"threadId":thread,"turnId":turn}),
-                            Duration::from_secs(5)).await;
-                    });
-                }
-                return;
-            }
             self.emit(&app, &run, "state", json!({"state":"observed"}));
         }
     }
@@ -1415,7 +1508,7 @@ impl ExecutorCoordinator {
         let _connection = self.connect_lock.lock().await;
         self.epoch.advance();
         self.login_id.lock().unwrap().take();
-        let run = self.active.lock().unwrap().as_ref().map(|a| a.run.clone());
+        let run = self.active.lock().unwrap().as_ref().filter(|a| a.is_running()).map(|a| a.run.clone());
         if let Some(run) = run {
             let _ = self.control(app, &run, "paused").await;
         }
@@ -1430,6 +1523,10 @@ impl ExecutorCoordinator {
 }
 
 impl Active {
+    fn is_running(&self) -> bool {
+        self.gate.busy && !self.gate.is_cancelled()
+    }
+
     fn retire_cancelled_turn(&mut self, thread: &str, turn: &str) -> bool {
         if self.thread.as_deref()!=Some(thread) || self.gate.turn_id.as_deref()!=Some(turn) || !self.gate.is_cancelled() {
             return false;
@@ -1438,9 +1535,6 @@ impl Active {
         self.selection=None;
         self.gate.finished();
         true
-    }
-    fn gate_is_cancelled(&self) -> bool {
-        self.gate.is_cancelled()
     }
 }
 
@@ -1475,7 +1569,7 @@ mod browser_change_tests {
         gate.begin().unwrap();
         *runtime.active.lock().unwrap() = Some(Active {
             run: "run".into(), thread: None, gate, control_generation: None,
-            selection: None, usage_resumed: false, company_web: false,
+            selection: None, usage_resumed: false, company_web: false, company_turn_rows: 0,
         });
     }
 
@@ -1522,6 +1616,27 @@ mod browser_change_tests {
 #[cfg(test)]
 mod execution_message_tests {
     use super::*;
+
+    #[test]
+    fn company_batch_ends_only_when_no_authorized_rows_are_pending() {
+        assert!(company_batch_result(&json!({"completed":true,"pending_count":0})).is_ok());
+        assert!(company_batch_result(&json!({"completed":true,"pending_count":0,"historical_count":1}))
+            .unwrap().1.contains("1 家已有历史申请"));
+        assert_eq!(company_batch_result(&json!({"state":"paused","completed":false,"pending_count":2,
+            "message":"本批两家公司需要登录"})).unwrap(), ("paused","本批两家公司需要登录".to_owned()));
+        let pending = json!({"completed":false,"pending_count":2,"pending_companies":["北方","南方"]});
+        let message = company_batch_result(&pending).unwrap_err();
+        assert!(message.contains("2 家") && message.contains("北方、南方"));
+        assert!(company_batch_result(&json!({"completed":true,"pending_count":1})).is_err());
+    }
+
+    #[test]
+    fn company_continues_after_verified_progress_and_stops_on_no_progress_or_handoff() {
+        let partial = json!({"state":"incomplete","eligible_count":1});
+        assert_eq!(remaining_company_turn(&partial,2),Some(1));
+        assert_eq!(remaining_company_turn(&partial,1),None);
+        assert_eq!(remaining_company_turn(&json!({"state":"paused","eligible_count":0}),2),None);
+    }
 
     #[test]
     fn execution_log_uses_complete_messages_from_the_current_turn() {
@@ -1598,7 +1713,7 @@ mod selection_tests {
     #[test]
     fn cancelled_model_turn_can_resume_without_waiting_for_a_remote_final_event() {
         let mut active=Active{run:"r".into(),thread:Some("old-thread".into()),gate:TurnGate::default(),
-            control_generation:Some(1),selection:Some(SelectionTurn{decision_id:"d".into(),answer:None}),usage_resumed:false,company_web:false};
+            control_generation:Some(1),selection:Some(SelectionTurn{decision_id:"d".into(),answer:None}),usage_resumed:false,company_web:false,company_turn_rows:0};
         active.gate.begin().unwrap();active.gate.started("old-turn".into());
         assert!(!active.retire_cancelled_turn("old-thread","old-turn"));
         active.gate.cancel();

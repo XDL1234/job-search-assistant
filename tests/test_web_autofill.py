@@ -6,7 +6,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/worker/scripts'))
 from job_assistant.app_service import handle_app_request
 from job_assistant.profiles import save_personal_info
 from job_assistant.store import Store

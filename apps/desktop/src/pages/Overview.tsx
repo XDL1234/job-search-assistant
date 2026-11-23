@@ -1,36 +1,26 @@
 import { Activity, ArrowUpRight, BriefcaseBusiness, Building2, CalendarDays, CheckCircle2, ChevronRight, ClipboardList, Ellipsis, MessagesSquare, Plus } from "lucide-react";
 import { Button } from "../components/ui/button";
-import type { Snapshot } from "../contracts";
-import { beginningOfWeek, confirmedActions, displayTime, isActiveRun, runName, runStatus } from "../workspace";
+import type { AttentionCategory, Snapshot } from "../contracts";
+import { displayTime, isActiveRun, runName, runStatus } from "../workspace";
 
 const categories = [
   { id: "interview", text: "面试邀约", icon: CalendarDays },
   { id: "review", text: "岗位复核", icon: ClipboardList },
   { id: "other", text: "其他待办", icon: Ellipsis },
 ] as const;
-export type OverviewCategory = typeof categories[number]["id"];
 
-export function Overview({ snapshot, resumeReady, classify, onNew, onRun, onTodo, onRecords, onResume }: {
+export function Overview({ snapshot, resumeReady, onNew, onRun, onTodo, onRecords, onResume }: {
   snapshot: Snapshot;
   resumeReady?: boolean;
-  classify: (reason: string) => OverviewCategory;
   onNew: () => void;
   onRun: (id: string) => void;
-  onTodo: (category: OverviewCategory) => void;
+  onTodo: (category: AttentionCategory) => void;
   onRecords: () => void;
   onResume: () => void;
 }) {
   const now = new Date();
-  const realRuns = snapshot.runs.filter((run) => !run.config.simulation);
-  const realIds = new Set(realRuns.map((run) => run.id));
-  const active = realRuns.filter(isActiveRun);
-  const current = [...active, ...realRuns.filter((run) => run.status === "paused")].slice(0, 3);
-  const pending = snapshot.attention.filter((row) => !row.resolved);
-  const recent = snapshot.attempts.filter((row) => realIds.has(row.run_id) &&
-    ["success", "failed", "uncertain", "needs_user"].includes(row.status))
-    .sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 3);
-  const communicated = confirmedActions(snapshot, "greet").filter((action) =>
-    Boolean(action.run_id && realIds.has(action.run_id)) && new Date(action.updated).getTime() >= beginningOfWeek(now)).length;
+  const current = snapshot.runs;
+  const recent = snapshot.attempts;
   return <div className="overview-page">
     <header className="workspace-title">
       <div className="overview-heading">
@@ -40,9 +30,9 @@ export function Overview({ snapshot, resumeReady, classify, onNew, onRun, onTodo
       <Button onClick={onNew}><Plus size={19} /> 新建投递</Button>
     </header>
     <dl className="overview-stats">
-      <div className="card overview-stat"><dt>运行中</dt><dd>{active.length}</dd><Activity size={20} aria-hidden="true" /></div>
-      <div className="card overview-stat"><dt>待办</dt><dd>{pending.length}</dd><ClipboardList size={20} aria-hidden="true" /></div>
-      <div className="card overview-stat"><dt>本周已沟通</dt><dd>{communicated}</dd><MessagesSquare size={20} aria-hidden="true" /></div>
+      <div className="card overview-stat"><dt>运行中</dt><dd>{snapshot.active_real_count ?? 0}</dd><Activity size={20} aria-hidden="true" /></div>
+      <div className="card overview-stat"><dt>待办</dt><dd>{snapshot.pending_count ?? 0}</dd><ClipboardList size={20} aria-hidden="true" /></div>
+      <div className="card overview-stat"><dt>本周已沟通</dt><dd>{snapshot.weekly_greet_count ?? 0}</dd><MessagesSquare size={20} aria-hidden="true" /></div>
     </dl>
     <div className="overview-grid">
       <div className="overview-primary">
@@ -51,7 +41,7 @@ export function Overview({ snapshot, resumeReady, classify, onNew, onRun, onTodo
           {current.length ? <div className="overview-runs">
             {current.map((run) => {
               const running = isActiveRun(run);
-              const result = confirmedActions(snapshot, run.config.channels.includes("boss") ? "greet" : "submit", run.id).length;
+              const result = run.confirmed_counts?.[run.config.channels.includes("boss") ? "greet" : "submit"] ?? 0;
               const activity = snapshot.activity?.find((item) => item.run_id === run.id);
               return <button className={`overview-run ${running ? "active" : ""}`} key={run.id} onClick={() => onRun(run.id)}>
                 <BriefcaseBusiness size={22} />
@@ -79,7 +69,7 @@ export function Overview({ snapshot, resumeReady, classify, onNew, onRun, onTodo
         <section className="card overview-todo">
           <h2>需要你处理</h2>
           {categories.map(({ id, text, icon: Icon }) => <button key={id} onClick={() => onTodo(id)}>
-            <Icon size={21} /><span>{text}</span><strong>{pending.filter((item) => classify(item.reason) === id).length}</strong><ChevronRight size={16} />
+            <Icon size={21} /><span>{text}</span><strong>{snapshot.attention_category_counts?.[id] ?? 0}</strong><ChevronRight size={16} />
           </button>)}
         </section>
         <section className="card overview-profile">

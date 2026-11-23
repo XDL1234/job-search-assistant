@@ -29,7 +29,7 @@ pub struct WorkerClient {
 
 pub(crate) fn ui_method_allowed(method: &str) -> bool {
     matches!(method,
-        "health" | "snapshot" | "export_records" | "read_image"
+        "health" | "snapshot" | "list_records" | "record_detail" | "record_days" | "export_records" | "read_image"
             | "start_run" | "open_simulation" | "extract_profile" | "save_profile"
             | "get_profile" | "save_personal_info" | "get_resume" | "import_resume" | "preview_resume"
             | "extract_resume_profile" | "open_resume"
@@ -95,7 +95,7 @@ impl WorkerClient {
             python: std::env::var_os("JOB_ASSISTANT_PYTHON")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| "python.exe".into()),
-            script: repo.join("skills/job-search-assistant/scripts/run.py"),
+            script: repo.join("apps/worker/scripts/run.py"),
             executable,
             codex,
             browser_token: Arc::new(Mutex::new(None)),
@@ -280,7 +280,7 @@ mod proxy_tests {
         let python = PathBuf::from(std::env::var_os("JOB_ASSISTANT_PROXY_TEST_PYTHON").unwrap());
         let worker = WorkerClient {
             root: root.clone(), resources: PathBuf::new(), python: python.clone(),
-            script: manifest.join("../../../skills/job-search-assistant/scripts/run.py"),
+            script: manifest.join("../../../apps/worker/scripts/run.py"),
             executable: None, codex: None, browser_token: Arc::new(Mutex::new(None)),
         };
         let proxy_environment = worker.codex_proxy_environment().await.unwrap();

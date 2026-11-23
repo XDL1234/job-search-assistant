@@ -1,14 +1,17 @@
 """真实格式提取、材料指纹、版本与个人数据隔离。"""
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import patch
 import zipfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'apps/worker/scripts'))
 from job_assistant.store import Store
 from job_assistant.app_service import handle_app_request
 
@@ -23,6 +26,41 @@ class ProfilesTests(unittest.TestCase):
 
     def call(self,method,**params):
         return handle_app_request(self.store,{'id':'test','method':method,'params':params})
+
+    def test_concurrent_editors_only_one_can_publish_same_profile_version(self):
+        expected = ''
+        folder = self.store.root / 'profiles'
+        for phase in ('首次创建', '再次编辑'):
+            with self.subTest(phase=phase):
+                gate = Barrier(2)
+                def save(name):
+                    with closing(Store(self.store.root)) as store:
+                        gate.wait(timeout=5)
+                        return handle_app_request(store, {'id': name, 'method': 'save_personal_info', 'params': {
+                            'profile': {'name': name}, 'expected_version': expected}})
+                with ThreadPoolExecutor(2) as workers:
+                    outcomes = list(workers.map(save, ['甲' + phase, '乙' + phase]))
+                winner, = (reply for reply in outcomes if reply['ok'])
+                rejected, = (reply for reply in outcomes if not reply['ok'])
+                self.assertEqual(rejected['error']['code'], 'profile_version_conflict')
+                self.assertEqual(self.call('get_profile')['result'], winner['result'])
+                self.assertEqual(winner['result']['profile']['name'], winner['id'])
+                expected = winner['result']['version_id']
+        self.assertEqual(len(list(folder.glob('*.json'))), 3)  # 两次成功的不可变版本和一个指针。
+
+    def test_import_with_stale_version_preserves_newer_edits(self):
+        source = self.root / 'profile.json'
+        source.write_text('{"name":"A"}', encoding='utf-8')
+        extraction = self.call('extract_profile', path=str(source))['result']
+        previous = self.call('save_personal_info', profile={'name': '甲'}, expected_version='')['result']
+        updated = self.call('save_personal_info', profile={'name': '乙'}, expected_version=previous['version_id'])['result']
+        for method in ('save_personal_info', 'save_profile'):
+            with self.subTest(method=method):
+                args = {'resume_path': str(source), 'confirmed': True} if method == 'save_profile' else {}
+                response = self.call(method, profile=extraction['profile'], extraction=extraction,
+                                     expected_version=previous['version_id'], **args)
+                self.assertEqual(response['error']['code'], 'profile_version_conflict')
+                self.assertEqual(self.call('get_profile')['result'], updated)
 
     def test_docx_paragraphs_and_tables_have_sources_without_duplicates(self):
         path=self.root/'含 空格 中文.docx'

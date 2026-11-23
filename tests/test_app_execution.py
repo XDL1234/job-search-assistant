@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/worker/scripts'))
 from job_assistant.app_service import handle_app_request
 from job_assistant.store import Store
 
@@ -60,9 +60,21 @@ class AppExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.db.check_run(run)
 
+    def test_late_pause_cancels_pending_watch_and_preserves_completed_run_on_reopen(self):
+        _, run = self.demo()
+        with self.db.conn:
+            self.db.conn.execute("UPDATE runs SET status='completed' WHERE id=?", (run,))
+        watch = self.call('control_run', run_id=run, action='watching')
+        self.assertTrue(watch['ok'], watch)
+        self.assertTrue(self.call('control_run', run_id=run, action='paused')['ok'])
+        self.assertTrue(self.call('recover_app')['ok'])
+        self.assertEqual(self.db.one('runs', run)['status'], 'completed')
+        command = self.db.conn.execute('SELECT status FROM panel_commands WHERE id=?', (watch['result']['id'],)).fetchone()
+        self.assertEqual(command['status'], 'cancelled')
+
     def test_recover_pauses_only_app_runs_and_marks_inflight_uncertain(self):
         _, run = self.demo()
-        other = self.db.create_run({'channels': ['web']}, '其他 Skill 轮次')
+        other = self.db.create_run({'channels': ['web']}, '其他非桌面轮次')
         self.db.control(run, 'running')
         attempt = self.db.begin_attempt(run, '模拟招聘', 'http://127.0.0.1/simulation', '嵌入式', 'boss', 'test-greet')
         action = self.db.prepare_action(run, attempt, 'greet', '模拟招聘', {})

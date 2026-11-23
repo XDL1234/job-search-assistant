@@ -2,16 +2,15 @@ import { useEffect, useState } from "react";
 import { Building2, CalendarDays, ChevronRight, CircleAlert, CircleCheck, ClipboardList, Info, Send, ShieldCheck, SquarePen } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { native, request } from "../bridge";
-import type { Snapshot } from "../contracts";
+import type { AttentionCategory, Snapshot } from "../contracts";
 import "./WorkspaceSettings.css";
 
-type Category = "interview" | "review" | "other";
-type Filter = Category | "all";
+type Filter = AttentionCategory | "all";
 type Attention = Snapshot["attention"][number];
 type Props = {
   snapshot: Snapshot;
   onChanged: () => void | Promise<void>;
-  initialCategory?: Category;
+  initialCategory?: AttentionCategory;
 };
 const categories: { key: Filter; label: string }[] = [
   { key: "all", label: "全部" },
@@ -27,12 +26,6 @@ const reasons: Record<string, string> = {
   unknown_question: "这是尚未配置回复的问题", needs_grounded_draft: "需要根据真实资料组织回复",
   missing_source: "个人资料缺少回答所需信息",
 };
-
-export function attentionCategory(reason: string): Category {
-  if (/^(岗位精筛待人工查看|岗位或资料超过|岗位城市超出|岗位列表已变化|发送前岗位城市)/u.test(reason)) return "review";
-  if (/^interview$|^(?:发现)?面试(?:邀约|事项)/u.test(reason)) return "interview";
-  return "other";
-}
 
 export function findReplyTarget(snapshot: Snapshot, conversationId: string) {
   const conversation = snapshot.conversations?.find((c) => c.id === conversationId);
@@ -85,7 +78,7 @@ export function Inbox({ snapshot, onChanged, initialCategory }: Props) {
   }, [initialCategory]);
   const pending = snapshot.attention.filter((item) => !item.resolved)
     .sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""));
-  const visible = pending.filter((item) => filter === "all" || attentionCategory(item.reason) === filter);
+  const visible = pending.filter((item) => filter === "all" || (item.category ?? "other") === filter);
   const opened = visible.find((item) => item.id === selected) || visible[0];
   const target = opened && findReplyTarget(snapshot, opened.subject);
   const latest = opened && snapshot.conversations?.find((item) => item.id === opened.subject)?.latest_message;
@@ -98,7 +91,7 @@ export function Inbox({ snapshot, onChanged, initialCategory }: Props) {
         {categories.map(({ key, label }) => (
           <button type="button" key={key} aria-pressed={filter === key} onClick={() => { setFilter(key); select(""); }}>
             {label}<span className="workspace-count">{key === "all" ? pending.length :
-              pending.filter((item) => attentionCategory(item.reason) === key).length}</span>
+              pending.filter((item) => (item.category ?? "other") === key).length}</span>
           </button>
         ))}
       </nav>
@@ -107,7 +100,7 @@ export function Inbox({ snapshot, onChanged, initialCategory }: Props) {
           <div className="inbox-list" aria-label="待办事项">
             {visible.map((item) => {
               const { company, job, message, reason } = attentionDetails(snapshot, item);
-              const category = attentionCategory(item.reason);
+              const category = item.category ?? "other";
               const Icon = category === "interview" ? CalendarDays : category === "review" ? Building2 : ClipboardList;
               const created = timeLabel(item.created);
               return <button type="button" key={item.id} className="inbox-entry"
@@ -137,7 +130,7 @@ function InboxItem({ snapshot, item, onChanged }: Props & { item: Attention }) {
   const target = findReplyTarget(snapshot, item.subject);
   const original = message?.text || target?.text;
   const note = snapshot.notes?.filter((row) => row.attention_id === item.id && row.message_key === messageKey).at(-1);
-  const category = attentionCategory(item.reason);
+  const category = item.category ?? "other";
   const interview = category === "interview";
   const review = category === "review";
   const limit = interview ? 300 : 4000;

@@ -2,7 +2,7 @@
 
 构建入口：`python -X utf8 "tools/build_desktop.py"`。需要既有桌面开发环境和官方 Codex CLI 0.156.1 Windows x64 平台包，启动器可发现 npm 安装的官方包，或通过 `JOB_ASSISTANT_CODEX` 指向其中 `bin/codex.exe`。
 
-脚本在项目 `.verification/desktop-release` 创建专用 Python 构建环境，安装依赖清单及 PyInstaller 6.15.0；通过 Skill 白名单暂存资源，生成 onedir 工作进程。只复制 Codex 官方发行目录，不读取用户的 `.codex` 目录或凭据。
+脚本在项目 `.verification/desktop-release` 创建专用 Python 构建环境，安装依赖清单及 PyInstaller 6.15.0；按白名单暂存 `apps/worker` 的工作进程源码和资源，生成 onedir 工作进程。只复制 Codex 官方发行目录，不读取用户的 `.codex` 目录或凭据。
 
 `apps/desktop/src-tauri/tauri.bundle.conf.json` 仅用于分发构建，指定内置资源。普通开发/单元测试不需要预先准备大体积发布资源。编译后的应用从安装目录 `runtime` 读取工作进程与 Codex；网页资源嵌入 exe，无需 Vite 服务。
 
@@ -13,7 +13,7 @@ python -X utf8 "tools/build_desktop.py" --resources-only
 python -X utf8 "tools/build_desktop.py" --reuse-resources
 ```
 
-复用资源前应确认 Python/Skill/内置执行器没有变更；变更后重新执行完整构建。资源清单记录路径、大小和 SHA256，拒绝明显的账户文件、个人资料和运行台账。许可证随包提供，清单不包含构建者用户目录。
+复用资源前应确认 Python 依赖或工作进程没有变更；变更后重新执行完整构建。资源清单记录路径、大小和 SHA256，拒绝明显的账户文件、个人资料和运行台账。许可证随包提供，清单不包含构建者用户目录。
 
 安装版将投递记录、截图、诊断、个人资料和专用浏览器数据写入安装目录的 `data`。请选择当前 Windows 用户可写的安装位置。由旧版本升级时，先退出旧的求职助手和求职专用 Chrome。首次打开后会复制旧资料并更新其中的路径，原目录可用于回退。内置 Codex 在 `data/codex` 单独保存登录和会话，升级后需要时可在应用内重新登录。
 
@@ -27,6 +27,6 @@ MSI 使用 Tauri 下载到构建目录的 WiX，并用 Windows 默认临时目�
 
 EXE 安装后，运行 `python -X utf8 "tests/desktop_install_smoke.py" --shortcut "桌面快捷方式的完整路径"`。脚本通过实际快捷方式验证首页和导出。`--connect` 用于检查 Codex 连接。
 
-新浏览器底座随包提供固定的 agent-browser 原生可执行文件、许可证、补丁说明和运行时清单，取消 `browser-extension` 分发。先运行 `tools/build_agent_browser.py` 构建固定来源，再准备桌面资源；`--reuse-resources` 会核验 Skill 源指纹、worker 哈希、原生运行时能力及全量资源清单，不会复用已过期工作进程。清理路径必须解析在本项目资源目录内部；构建只打包白名单，不读取浏览器登录目录或 `.codex` 凭据。
+新浏览器底座随包提供固定的 agent-browser 原生可执行文件、许可证、补丁说明和运行时清单，取消 `browser-extension` 分发。先运行 `tools/build_agent_browser.py` 构建固定来源，再准备桌面资源；`--reuse-resources` 会核验 工作进程源码指纹、worker 哈希、原生运行时能力及全量资源清单，不会复用已过期工作进程。清理路径必须解析在本项目资源目录内部；构建只打包白名单，不读取浏览器登录目录或 `.codex` 凭据。
 
 配置页实际窗口回归：先运行 Vite 并构建 debug 原生程序，再运行 `python "tests/desktop_configuration_smoke.py" --profile "本机资料文件" --resume "附件文件"`。此检查只操作本应用的资料、九种配置预览、规则验证和连接器设置，不点击真实招聘网站。测试数据和截图只写入 `.verification`。

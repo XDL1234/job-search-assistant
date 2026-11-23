@@ -3,16 +3,20 @@ import { isTauri } from "@tauri-apps/api/core";
 import { ArrowDown, ArrowUp, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Download, FileImage, Info, Layers, Maximize2, Minus, Plus, Search, X } from "lucide-react";
 import { request } from "../bridge";
 import { Button } from "../components/ui/button";
-import type { Attempt, Snapshot } from "../contracts";
+import type { Attempt, RecordedAction, Snapshot } from "../contracts";
 import "./records.css";
 
 type DateFilter = { kind: "all" | "today" | "week" } | { kind: "day"; day: string };
 type Evidence = Snapshot["evidence"][number];
 type Photo = { url: string; name: string };
 type RecordTab = "application" | "evidence";
+type RecordSummary = Omit<Attempt, "reason" | "url">;
+type RecordPage = { records: RecordSummary[]; total: number; page: number; page_size: number };
+type RecordDetail = Pick<Snapshot, "fields" | "evidence" | "actions"> & { attempt: Attempt };
+const pageSize = 50;
 
 const resultLabels: Record<string, string> = {
-  success: "成功", uncertain: "待核查", needs_user: "待处理", failed: "失败",
+  success: "成功", manual_submitted: "用户标记已提交", uncertain: "待核查", needs_user: "待处理", failed: "失败",
   in_progress: "处理中", no_match: "不匹配", skipped: "已跳过",
 };
 const evidenceLabels: Record<string, string> = {
@@ -36,32 +40,56 @@ function parseDay(value: string) {
   return new Date(`${value}T00:00:00`);
 }
 
-export function attemptDay(attempt: Pick<Attempt, "started" | "updated">) {
-  return localDay(new Date(attempt.started || attempt.updated)) || localDay(new Date(attempt.updated));
+export function recordDateRange(filter: DateFilter, today: Date) {
+  if (filter.kind === "all") return {};
+  if (filter.kind === "day") return { date_from: filter.day, date_to: filter.day };
+  const date_to = localDay(today);
+  const date_from = filter.kind === "today" ? date_to
+    : localDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6));
+  return { date_from, date_to };
 }
 
-export function matchesRecordDay(day: string, filter: DateFilter, today: Date) {
-  if (filter.kind === "all") return true;
-  if (!day) return false;
-  if (filter.kind === "day") return day === filter.day;
-  const end = localDay(today);
-  if (filter.kind === "today") return day === end;
-  const start = localDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6));
-  return start <= day && day <= end;
+// 切换查询时立即隔离旧结果，等当前请求完成后才安排下一次刷新。
+function useRecordsRequest<T>(read: () => Promise<T>, enabled: boolean, pollMs = 0, delayMs = 0) {
+  const [state, setState] = useState<{ read: typeof read; data?: T; error?: string }>();
+  const [retryCount, setRetryCount] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let active = true;
+    let timer: number;
+    const refresh = async () => {
+      try {
+        const data = await read();
+        if (active) setState({ read, data });
+      } catch (err) {
+        if (active) setState((old) => ({ read, data: old?.read === read ? old.data : undefined, error: String(err) }));
+      } finally {
+        if (active && pollMs) timer = window.setTimeout(refresh, pollMs);
+      }
+    };
+    timer = window.setTimeout(refresh, delayMs);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [read, enabled, pollMs, delayMs, retryCount]);
+  return { ...(enabled && state?.read === read ? state : {}), retry: () => setRetryCount((n) => n + 1) };
 }
 
 const channelLabel = (channel: string) => channel === "web" ? "官网" : channel === "boss" ? "BOSS" : channel;
-const resultLabel = (attempt: Attempt) => attempt.status === "success"
+const resultLabel = (attempt: RecordSummary) => attempt.status === "success"
   ? (attempt.channel === "boss" ? "已沟通" : "已提交")
   : resultLabels[attempt.status] ?? attempt.status;
+export function receiptLabel(action?: Pick<RecordedAction, "kind" | "status">) {
+  if (action?.status === "uncertain") return "待核查";
+  if (action?.status === "succeeded" && action.kind === "submit") return "已提交";
+  if (action?.status === "succeeded" && action.kind === "greet") return "已沟通";
+  return "暂无明确回执";
+}
 const evidenceLabel = (kind: string) => evidenceLabels[kind] ?? kind;
 const timestamp = (value?: string | null) => (value ? new Date(value).getTime() : 0) || 0;
 const fullTime = (value?: string | null) => value && localDay(new Date(value)) ? new Date(value).toLocaleString("zh-CN") : "—";
 
-function RecordDatePicker({ filter, onChange, dates }: {
+function RecordDatePicker({ filter, onChange }: {
   filter: DateFilter;
   onChange: (value: DateFilter) => void;
-  dates: Set<string>;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -94,6 +122,12 @@ function RecordDatePicker({ filter, onChange, dates }: {
   const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
   const leftPad = (first.getDay() + 6) % 7;
   const cellCount = Math.ceil((leftPad + daysInMonth) / 7) * 7;
+  const date_from = localDay(new Date(first.getFullYear(), first.getMonth(), 1 - leftPad));
+  const date_to = localDay(new Date(first.getFullYear(), first.getMonth(), cellCount - leftPad));
+  const readDays = useCallback(() => request<{ days: string[] }>("record_days", { date_from, date_to }),
+    [date_from, date_to]);
+  const calendar = useRecordsRequest(readDays, open && isTauri());
+  const dates = new Set(calendar.data?.days);
   const today = localDay(new Date());
   const apply = (value: DateFilter) => { onChange(value); setOpen(false); trigger.current?.focus(); };
   const changeMonth = (delta: number) => setMonth(new Date(first.getFullYear(), first.getMonth() + delta, 1));
@@ -141,6 +175,7 @@ function RecordDatePicker({ filter, onChange, dates }: {
           <Button disabled={!draft || localDay(parseDay(draft)) !== draft} onClick={() => apply({ kind: "day", day: draft })}>应用日期</Button>
         </div>
         <small>按沟通或提交尝试的日期</small>
+        {calendar.error && <p role="alert">日期标记加载失败 <button className="records-accent-link" onClick={calendar.retry}>重试</button></p>}
       </section>}
     </div>
     {filter.kind !== "all" && <button className="records-accent-link" onClick={() => apply({ kind: "all" })}>清除日期</button>}
@@ -245,15 +280,17 @@ function ApplicationAddress({ url }: { url: string }) {
   </div>;
 }
 
-function RecordDetails({ attempt, snapshot, tab, onTab, onClose, onEnlarge }: {
-  attempt: Attempt; snapshot: Snapshot; tab: RecordTab;
+function RecordDetails({ row, tab, onTab, onClose, onEnlarge }: {
+  row: RecordSummary; tab: RecordTab;
   onTab: (tab: RecordTab) => void; onClose: () => void; onEnlarge: (photo: Photo) => void;
 }) {
   const tabs = useId();
-  const fields = snapshot.fields.filter((field) => field.attempt_id === attempt.id);
-  const files = snapshot.evidence.filter((file) => file.attempt_id === attempt.id)
-    .sort((a, b) => timestamp(b.created) - timestamp(a.created));
-  const actions = snapshot.actions?.filter((action) => action.attempt_id === attempt.id) ?? [];
+  const read = useCallback(() => request<RecordDetail>("record_detail", { attempt_id: row.id }), [row.id, row.updated]);
+  const detail = useRecordsRequest(read, true, row.status === "in_progress" ? 2500 : 0);
+  const attempt = detail.data?.attempt ?? row;
+  const fields = detail.data?.fields ?? [];
+  const files = [...(detail.data?.evidence ?? [])].sort((a, b) => timestamp(b.created) - timestamp(a.created));
+  const actions = detail.data?.actions ?? [];
   const submissionActions = actions.filter((action) => action.kind === "greet" || action.kind === "submit");
   const receipt = submissionActions.sort((a, b) => timestamp(b.updated) - timestamp(a.updated))[0];
   const receiptIds = new Set(submissionActions.map((action) => action.evidence_id));
@@ -261,8 +298,6 @@ function RecordDetails({ attempt, snapshot, tab, onTab, onClose, onEnlarge }: {
   const receiptFiles = files.filter((file) => receiptIds.has(file.id)
     || (!actionIds.has(file.id) && ["result", "failure", "verification"].includes(file.kind)));
   const filing = files.filter((file) => !receiptFiles.includes(file));
-  const receiptLabel = receipt?.status === "succeeded" && receipt.evidence_id
-    ? (receipt.kind === "greet" ? "已沟通" : "已提交") : "暂无明确回执";
 
   return <aside className="records-details" aria-label="投递详情">
     <div className="records-details-heading">
@@ -284,12 +319,14 @@ function RecordDetails({ attempt, snapshot, tab, onTab, onClose, onEnlarge }: {
         tabIndex={tab === name ? 0 : -1} onClick={() => onTab(name)}>{tabNames[name]}</button>)}
     </div>
     <div role="tabpanel" id={`${tabs}-panel-${tab}`} aria-labelledby={`${tabs}-${tab}`} tabIndex={0}>
-      {tab === "application" ? <>
+      {detail.error && <p role="alert">{detail.error} <button className="records-accent-link" onClick={detail.retry}>重新读取详情</button></p>}
+      {!detail.data && !detail.error && <p role="status">正在读取投递详情…</p>}
+      {detail.data && (tab === "application" ? <>
         <dl className="records-details-meta">
           <dt>投递时间</dt><dd>{fullTime(localDay(new Date(attempt.started || "")) ? attempt.started : attempt.updated)}</dd>
           <dt>最近更新</dt><dd>{fullTime(attempt.updated)}</dd>
-          {attempt.url && <><dt>申请地址</dt><dd><ApplicationAddress key={attempt.id} url={attempt.url} /></dd></>}
-          {attempt.reason && <><dt>处理说明</dt><dd>{attempt.reason}</dd></>}
+          {detail.data.attempt.url && <><dt>申请地址</dt><dd><ApplicationAddress key={attempt.id} url={detail.data.attempt.url} /></dd></>}
+          {detail.data.attempt.reason && <><dt>处理说明</dt><dd>{detail.data.attempt.reason}</dd></>}
         </dl>
         <h3>填写记录</h3>
         {fields.length ? <dl className="records-field-list">{fields.map((field) => <div key={field.name}>
@@ -299,20 +336,17 @@ function RecordDetails({ attempt, snapshot, tab, onTab, onClose, onEnlarge }: {
         <EvidenceGallery key={`${attempt.id}-filing`} items={filing} title="填写留档" onEnlarge={onEnlarge} />
         <section className="records-receipt">
           <h3>回执情况</h3>
-          <p className="records-note"><Info size={17} /><span>{receiptLabel}{receipt?.reason && <small>{receipt.reason}</small>}</span></p>
+          <p className="records-note"><Info size={17} /><span>{receiptLabel(receipt)}{receipt?.reason && <small>{receipt.reason}</small>}</span></p>
           {receiptFiles.length > 0 && <EvidenceGallery key={`${attempt.id}-receipt`} items={receiptFiles} title="回执截图" onEnlarge={onEnlarge} />}
         </section>
-      </>}
+      </>)}
     </div>
   </aside>;
 }
 
-export function Records({ snapshot, onExport, exporting = false }: { snapshot: Snapshot; onExport: () => void; exporting?: boolean }) {
-  const [query, setQuery] = useState("");
-  const [channel, setChannel] = useState("");
-  const [result, setResult] = useState("");
-  const [sort, setSort] = useState("newest");
-  const [filter, setFilter] = useState<DateFilter>({ kind: "all" });
+export function Records({ onExport, exporting = false }: { onExport: () => void; exporting?: boolean }) {
+  const [criteria, setCriteria] = useState({ query: "", channel: "", result: "", sort: "newest", filter: { kind: "all" } as DateFilter, page: 1 });
+  const { query, channel, result, sort, filter } = criteria;
   const [selection, setSelection] = useState<{ id: string; tab: RecordTab }>();
   const [listWidth, setListWidth] = useState(58);
   const [photo, setPhoto] = useState<Photo>();
@@ -320,20 +354,32 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
   const list = useRef<HTMLDivElement>(null);
   const drag = useRef<{ id: number; x: number; start: number; width: number } | null>(null);
   const listId = useId();
-  const now = new Date();
-  const search = query.trim().toLowerCase();
-  const availableDays = new Set(snapshot.attempts.map(attemptDay));
-  const records = snapshot.attempts.filter((record) => (
-    (!channel || record.channel === channel) && (!result || record.status === result) &&
-    `${record.company} ${record.job}`.toLowerCase().includes(search) && matchesRecordDay(attemptDay(record), filter, now)
-  )).sort((a, b) => sort === "newest" ? timestamp(b.updated) - timestamp(a.updated) : timestamp(a.updated) - timestamp(b.updated));
-  const selected = records.find((record) => record.id === selection?.id);
+  const read = useCallback(() => request<RecordPage>("list_records", {
+    page: criteria.page, page_size: pageSize, query: query.trim(), channel, status: result, sort,
+    ...recordDateRange(filter, new Date()),
+  }), [criteria.page, query, channel, result, sort, filter]);
+  const page = useRecordsRequest(read, isTauri(), 2500, query ? 150 : 0);
+  const records = page.data?.records ?? [];
+  const total = page.data?.total ?? 0;
+  const pageCount = Math.ceil(total / pageSize);
+  const pageNumber = page.data?.page ?? criteria.page;
   useEffect(() => {
-    if (selection && !selected) {
+    list.current?.querySelector(".records-table-scroll")?.scrollTo({ top: 0 });
+  }, [read]);
+  const selected = records.find((record) => record.id === selection?.id);
+  const changeFilter = (next: Partial<Omit<typeof criteria, "page">>) => {
+    if (next.query !== undefined && next.query !== query) {
       setSelection(undefined);
       setPhoto(undefined);
     }
-  }, [selection, selected]);
+    setCriteria((current) => ({ ...current, ...next, page: 1 }));
+  };
+  useEffect(() => {
+    if (selection && page.data && !selected) {
+      setSelection(undefined);
+      setPhoto(undefined);
+    }
+  }, [selection, selected, page.data]);
   const closeDetails = () => {
     list.current?.querySelector<HTMLButtonElement>('.records-select[aria-pressed="true"]')?.focus({ preventScroll: true });
     setSelection(undefined);
@@ -344,23 +390,23 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
 
   return <section className="records-page" aria-label="投递记录">
     <div className="records-heading">
-      <div><h1>投递记录</h1><RecordDatePicker filter={filter} onChange={setFilter} dates={availableDays} /></div>
+      <div><h1>投递记录</h1><RecordDatePicker filter={filter} onChange={(filter) => changeFilter({ filter })} /></div>
       <Button className="records-export" title="导出全部投递记录"
         disabled={exporting || !isTauri()} onClick={onExport}><Download size={18} />导出 Excel</Button>
     </div>
     <div className="records-filters" role="search" aria-label="筛选投递记录">
       <label className="records-search"><Search size={19} />
-        <input aria-label="搜索记录" placeholder="搜索公司或岗位" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <input aria-label="搜索记录" placeholder="搜索公司或岗位" value={query} onChange={(event) => changeFilter({ query: event.target.value })} />
       </label>
       <div className="records-filter-options">
-        <select aria-label="投递渠道" value={channel} onChange={(event) => setChannel(event.target.value)}>
+        <select aria-label="投递渠道" value={channel} onChange={(event) => changeFilter({ channel: event.target.value })}>
           <option value="">全部渠道</option><option value="boss">BOSS</option><option value="web">官网</option>
         </select>
-        <select aria-label="投递结果" value={result} onChange={(event) => setResult(event.target.value)}>
+        <select aria-label="投递结果" value={result} onChange={(event) => changeFilter({ result: event.target.value })}>
           <option value="">全部结果</option>
           {Object.entries(resultLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </select>
-        <select aria-label="更新时间排序" value={sort} onChange={(event) => setSort(event.target.value)}>
+        <select aria-label="更新时间排序" value={sort} onChange={(event) => changeFilter({ sort: event.target.value })}>
           <option value="newest">最近更新</option><option value="oldest">最早更新</option>
         </select>
       </div>
@@ -368,10 +414,10 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
     <div ref={content} className="records-content" data-split={Boolean(selected)}
       style={{ "--records-list-width": `${listWidth}%` } as CSSProperties}>
       <div ref={list} id={listId} className="records-list">
-        {filter.kind !== "all" && <p className="records-count" role="status">{scope} · {records.length} 条记录</p>}
+        {filter.kind !== "all" && page.data && <p className="records-count" role="status">{scope} · {total} 条记录</p>}
         <div className="records-table-scroll"><table>
           <thead><tr><th>公司和岗位</th><th>渠道</th><th>结果</th><th aria-sort={sort === "newest" ? "descending" : "ascending"}>
-            <button onClick={() => setSort(sort === "newest" ? "oldest" : "newest")}>更新 {sort === "newest" ? <ArrowDown size={15} /> : <ArrowUp size={15} />}</button>
+            <button onClick={() => changeFilter({ sort: sort === "newest" ? "oldest" : "newest" })}>更新 {sort === "newest" ? <ArrowDown size={15} /> : <ArrowUp size={15} />}</button>
           </th><th><span className="sr-only">操作</span></th></tr></thead>
           <tbody>{records.map((record) => {
             const updated = new Date(record.updated);
@@ -395,9 +441,15 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
             </tr>;
           })}</tbody>
         </table></div>
-        {records.length === 0 && <div className="records-empty"><Layers size={25} />
-          <p>{snapshot.attempts.length ? "没有符合条件的投递记录" : "暂无投递记录"}</p>
+        {page.error && <p role="alert" className="records-count">{page.error} <button className="records-accent-link" onClick={page.retry}>重新读取记录</button></p>}
+        {records.length === 0 && !page.error && <div className="records-empty"><Layers size={25} />
+          <p role="status">{!page.data && isTauri() ? "正在读取记录…" : query.trim() || channel || result || filter.kind !== "all" ? "没有符合条件的投递记录" : "暂无投递记录"}</p>
         </div>}
+        {page.data && pageCount > 1 && <nav className="records-pagination" aria-label="投递记录分页">
+          <span aria-live="polite">共 {total} 条 · 第 {pageNumber} / {pageCount} 页</span>
+          <Button variant="secondary" disabled={pageNumber <= 1} aria-label="上一页" onClick={() => setCriteria({ ...criteria, page: pageNumber - 1 })}><ChevronLeft size={16} /></Button>
+          <Button variant="secondary" disabled={pageNumber >= pageCount} aria-label="下一页" onClick={() => setCriteria({ ...criteria, page: pageNumber + 1 })}><ChevronRight size={16} /></Button>
+        </nav>}
       </div>
       {selected && selection && <>
         <div className="records-divider" role="separator" aria-label="调整投递记录两栏宽度"
@@ -425,7 +477,7 @@ export function Records({ snapshot, onExport, exporting = false }: { snapshot: S
             setListWidth(clampListWidth(next));
           }}
         />
-        <RecordDetails key={selected.id} attempt={selected} snapshot={snapshot} tab={selection.tab}
+        <RecordDetails key={selected.id} row={selected} tab={selection.tab}
           onTab={(next) => setSelection({ id: selected.id, tab: next })} onClose={closeDetails} onEnlarge={setPhoto} />
       </>}
     </div>

@@ -17,7 +17,7 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-sys.path.insert(0, str(ROOT / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(ROOT / 'apps/worker/scripts'))
 from desktop_dev import environment
 from desktop_app_smoke import close_window
 from desktop_save_dialog import answer_export_dialog, answer_open_dialog
@@ -108,6 +108,11 @@ def check_record_dates(page, pid, data, folder):
     )
     scrolling_rows = tuple((uuid.uuid4().hex, f'合成滚动公司 {index}', '合成滚动岗位', 'boss',
                             'failed', later_utc, later_utc) for index in range(26))
+    archive_utc = datetime(2019, 6, 12, 8).astimezone(timezone.utc).isoformat()
+    archived = tuple((uuid.uuid4().hex, f'分页公司 {index}', '归档岗位', 'boss', 'success',
+                      archive_utc, archive_utc) for index in range(25))
+    oldest_utc = datetime(2018, 1, 2, 8).astimezone(timezone.utc).isoformat()
+    oldest = (uuid.uuid4().hex, '跨页检索公司', '归档岗位', 'boss', 'success', oldest_utc, oldest_utc)
     long_url = 'https://example.invalid/apply?ref=' + 'synthetic-' * 35
     with closing(sqlite3.connect(data / 'records.sqlite3')) as conn, conn:
         [(run_id,)] = conn.execute('SELECT id FROM runs').fetchall()
@@ -116,8 +121,9 @@ def check_record_dates(page, pid, data, folder):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             [(identity, run_id, company, job, channel, status, '离线记录核验', started, updated,
               long_url if identity == fixtures[0][0] else 'https://example.invalid/apply')
-             for identity, company, job, channel, status, started, updated in (*fixtures, *scrolling_rows)])
+             for identity, company, job, channel, status, started, updated in (*fixtures, *scrolling_rows, *archived, oldest)])
         conn.execute('INSERT INTO fields VALUES (?, ?, ?, ?, NULL)', (fixtures[0][0], '申请岗位', '共享岗位', '模拟资料'))
+        conn.execute('INSERT INTO fields VALUES (?, ?, ?, ?, NULL)', (oldest[0], '申请岗位', oldest[2], '归档资料'))
     frame = folder / 'synthetic-record.png'
     Image.new('RGB', (720, 2200), '#e9efff').save(frame)
     with closing(Store(data)) as store:
@@ -131,6 +137,22 @@ def check_record_dates(page, pid, data, folder):
         expect(row).to_be_visible(timeout=15000)
     details = page.get_by_role('complementary', name='投递详情')
     expect(details).to_have_count(0)
+    navigation = page.get_by_role('navigation', name='投递记录分页')
+    oldest_row = page.get_by_role('row').filter(has_text=oldest[1])
+    expect(oldest_row).to_have_count(0)
+    navigation.get_by_role('button', name='下一页').click()
+    expect(oldest_row).to_be_visible()
+    expect(navigation.get_by_role('button', name='下一页')).to_be_disabled()
+    oldest_row.get_by_role('button', name=oldest[1]).click()
+    expect(details).to_contain_text('归档资料')
+    navigation.get_by_role('button', name='上一页').click()
+    expect(first).to_be_visible()
+    expect(details).to_have_count(0)
+    page.get_by_label('搜索记录', exact=True).fill(oldest[1])
+    expect(oldest_row).to_be_visible()
+    expect(first).to_have_count(0)
+    page.get_by_label('搜索记录', exact=True).fill('')
+    expect(first).to_be_visible()
     expect(page.locator('.records-page tr[data-selected="true"]')).to_have_count(0)
     list_panel = page.locator('.records-list')
     list_scroll = page.locator('.records-table-scroll')
@@ -259,6 +281,8 @@ def check_record_dates(page, pid, data, folder):
     expect(fallback).to_have_count(0)
     search.fill('')
     page.get_by_label('更新时间排序').select_option('oldest')
+    expect(page.locator('.records-page tbody tr').first).to_contain_text(oldest[1])
+    page.get_by_label('投递渠道').select_option('web')
     expect(page.locator('.records-page tbody tr').first).to_contain_text('合成旧格式记录')
     export = page.get_by_role('button', name='导出 Excel', exact=True)
     export.click()
@@ -553,6 +577,17 @@ def main():
                 saved_fields = json.loads((data / 'profiles/current.json').read_text(encoding='utf-8'))['profile']
                 assert saved_fields['document_number'] == 'TEST-001' and saved_fields['phone_country_code'] == '+86'
                 assert saved_fields['education'][0]['exchange_student'] == '否'
+                page.get_by_label('招聘信息来源', exact=True).fill('本窗口草稿')
+                with closing(Store(data)) as other:
+                    latest = save_personal_info(other, {**saved_fields, 'recruitment_source': '另一窗口的更改'})
+                page.get_by_role('button', name='保存个人信息', exact=True).click()
+                expect(page.get_by_role('alert').filter(has_text='本页草稿已保留')).to_be_visible()
+                expect(page.get_by_label('招聘信息来源', exact=True)).to_have_value('本窗口草稿')
+                current = json.loads((data / 'profiles/current.json').read_text(encoding='utf-8'))
+                assert current['version_id'] == latest['version_id']
+                page.get_by_role('button', name='放弃草稿并读取最新版').click()
+                expect(page.get_by_label('招聘信息来源', exact=True)).to_have_value('另一窗口的更改')
+                expect(page.get_by_role('button', name='保存个人信息', exact=True)).to_be_disabled()
                 open_page(page, '简历')
                 expect(page.get_by_text(resume.name, exact=True)).to_be_visible()
                 expect(page.get_by_role('heading', name='简历预览')).to_be_visible()

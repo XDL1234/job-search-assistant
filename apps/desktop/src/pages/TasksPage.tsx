@@ -139,12 +139,6 @@ export function TasksPage({ snapshot, onNew, onOpen }: {
     counts[classification(run)]++;
   }
   const runs = scope === "all" ? candidates : candidates.filter((run) => classification(run) === scope);
-  const completed = new Map<string, number>();
-  for (const action of snapshot.actions || []) {
-    if (action.run_id && action.status === "succeeded" && ["greet", "submit"].includes(action.kind)) {
-      completed.set(action.run_id, (completed.get(action.run_id) || 0) + 1);
-    }
-  }
   const toggleUsage = (runId: string | null, anchor: HTMLButtonElement) => {
     if (popover?.runId === runId) {
       setPopover(undefined);
@@ -188,7 +182,8 @@ export function TasksPage({ snapshot, onNew, onOpen }: {
         <tbody>
           {runs.map((run) => {
             const status = statusAppearance(run), boss = run.config.channels.includes("boss");
-            const count = completed.get(run.id) ?? 0, limit = boss ? run.config.max_contacts : undefined;
+            const count = (run.confirmed_counts?.greet ?? 0) + (run.confirmed_counts?.submit ?? 0);
+            const limit = boss ? run.config.max_contacts : undefined;
             const result = count || run.started_at ? boss ? "已沟通" : "已提交" : "";
             const total = usage?.[run.id];
             const aiText = usageError && !usage ? "读取失败" : !usage ? "读取中…" : total

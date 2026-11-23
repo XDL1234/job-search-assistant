@@ -24,7 +24,7 @@ Python 工作进程以结构化请求调用已有 `cli.dispatch(store, request)`
 
 界面、AI 会话和业务台账分别保存自己的状态：前端负责展示；App Server 管理模型上下文；SQLite 保存授权、动作及结果。`threadId` 与 `run_id` 建立映射。模型回合完成不等于投递完成，恢复模型上下文也不等于允许再次发送。
 
-应用分发包含 Skill 与执行依赖，不要求用户寻找额外 computer-use Skill。已有 Codex 安装先做兼容性检查；缺少 Codex 时通过引导安装经验证版本。Python 侧内置依赖与 Codex 账号登录是两种不同的就绪条件，不能用一个“已安装”状态混淆。
+安装包含 Python 工作进程、执行依赖和经过协议验证的 Codex CLI。应用分别显示本地运行时和 Codex 登录状态。
 
 参考：[App Server 官方接口](https://learn.chatgpt.com/docs/app-server)、[Tauri sidecar](https://v2.tauri.app/develop/sidecar/)。本机验证结论见 [接入报告](codex-probe.md)。
 
@@ -79,7 +79,7 @@ Python 工作进程以结构化请求调用已有 `cli.dispatch(store, request)`
 
 复用现有 `records.sqlite3` 与证据文件结构。新表保存资料版本、会话映射和人工发送授权；迁移前备份，失败回滚，原资料及证据不删除。图片按记录 ID 受限读取，不开放任意路径。支持明确选择旧数据目录，不能静默合并两份台账。
 
-既有 Skill/CLI 保持可用；桌面专用入口通过小型适配层复用领域逻辑，不复制整份 `store.py` 或 `policy.py`。资料、截图、凭据、临时请求和个人导出不进入源码或发布包。
+桌面应用通过 `apps/worker` 的请求入口复用台账和投递规则。安装包按资源白名单构建。资料、截图、凭据、临时请求和个人导出存放在本机数据目录。
 
 ## 发布门槛与本轮边界
 

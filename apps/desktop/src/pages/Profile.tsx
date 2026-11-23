@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Eye, EyeOff, FileText, Pencil, Plus, Save, TextSearch, Upload } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { native, request } from "../bridge";
+import { native, request, WorkerRequestError } from "../bridge";
 import { entries, fillFromResume, record, type Extraction, type ProfileData } from "./profile-draft";
 import "./WorkspaceSettings.css";
 
@@ -136,9 +136,11 @@ export function Profile({ onSaved, resumeExtraction }: {
   const [source, setSource] = useState("");
   const [extraction, setExtraction] = useState<Extraction>();
   const [profile, setProfile] = useState<ProfileData>({});
-  const [saved, setSaved] = useState(false);
+  const [version, setVersion] = useState("");
+  const [versionConflict, setVersionConflict] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "failed">("loading");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [shownDocument, setShownDocument] = useState<string>();
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -150,17 +152,29 @@ export function Profile({ onSaved, resumeExtraction }: {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  const loadSaved = useCallback((value: Saved | null) => {
+    setVersion(value?.version_id ?? "");
+    setProfile(value?.profile ?? {});
+    setSource(value?.source_file ?? "");
+    setExtraction(undefined);
+    setDirty(false);
+    setEditingRows({});
+    setVersionConflict(false);
+  }, []);
+
   useEffect(() => {
     let active = true;
     void request<Saved | null>("get_profile").then((value) => {
-      if (!active || !value) return;
-      setSaved(Boolean(value.version_id));
-      setProfile(value.profile);
-      setSource(value.source_file || "");
-    }).catch((failure) => { if (active) setError(String(failure)); })
-      .finally(() => { if (active) setLoading(false); });
+      if (!active) return;
+      loadSaved(value);
+      setLoadState("ready");
+    }).catch((failure) => {
+      if (!active) return;
+      setLoadState("failed");
+      setError(String(failure));
+    });
     return () => { active = false; };
-  }, []);
+  }, [loadAttempt, loadSaved]);
 
   const applyResume = useCallback((result: Extraction) => {
     const completed = filledGroups.current.get(result.source_sha256) ?? new Set<string>();
@@ -183,17 +197,20 @@ export function Profile({ onSaved, resumeExtraction }: {
   }, [profile]);
 
   useEffect(() => {
-    if (!resumeExtraction || loading || busy || resumeExtraction === appliedExtraction.current) return;
+    if (!resumeExtraction || loadState !== "ready" || busy || resumeExtraction === appliedExtraction.current) return;
     appliedExtraction.current = resumeExtraction;
     applyResume(resumeExtraction);
-  }, [resumeExtraction, loading, busy, applyResume]);
+  }, [resumeExtraction, loadState, busy, applyResume]);
 
   const perform = async (action: () => Promise<void>) => {
     setBusy(true);
     setError("");
     setNotice("");
     try { await action(); }
-    catch (failure) { setError(String(failure)); }
+    catch (failure) {
+      if (failure instanceof WorkerRequestError && failure.code === "profile_version_conflict") setVersionConflict(true);
+      else setError(String(failure));
+    }
     finally { setBusy(false); }
   };
 
@@ -218,15 +235,20 @@ export function Profile({ onSaved, resumeExtraction }: {
   });
 
   const save = () => void perform(async () => {
-    const result = await request<Saved>("save_personal_info", { profile, ...(extraction ? { extraction } : {}) });
-    setProfile(result.profile);
-    setSource(result.source_file || "");
-    setExtraction(undefined);
-    setSaved(true);
-    setDirty(false);
-    setEditingRows({});
+    const result = await request<Saved>("save_personal_info", { profile, expected_version: version, ...(extraction ? { extraction } : {}) });
+    loadSaved(result);
     setNotice("个人信息已保存。");
     await onSaved();
+  });
+
+  const discardAndReload = () => void perform(async () => {
+    const latest = await request<Saved | null>("get_profile");
+    loadSaved(latest);
+    editedFields.current.clear();
+    filledGroups.current.clear();
+    removedRows.current = {};
+    setShownDocument(undefined);
+    setNotice("已读取最新个人信息。");
   });
 
   const update = (change: (value: ProfileData) => ProfileData) => {
@@ -272,9 +294,15 @@ export function Profile({ onSaved, resumeExtraction }: {
   };
 
   return <section className="settings-profile" aria-label="个人信息">
-    {error && <div className="banner error" role="alert">{error}</div>}
+    {error && <div className="banner error" role="alert">{error}
+      {loadState === "failed" && <Button type="button" variant="secondary" onClick={() => {
+        setError("");
+        setLoadState("loading");
+        setLoadAttempt((attempt) => attempt + 1);
+      }}>重新读取个人信息</Button>}
+    </div>}
     {notice && <div className="banner" role="status">{notice}</div>}
-    <fieldset disabled={loading || busy} className="settings-profile-form settings-profile-layout">
+    <fieldset disabled={loadState !== "ready" || busy} className="settings-profile-form settings-profile-layout">
       <nav className="settings-profile-directory" aria-label="个人信息目录">
         {profileSections.map(({ key, label }) => <button type="button" key={key} onClick={() => jumpTo(key)}>{label}</button>)}
         {groups.map(({ key, label }) => {
@@ -293,8 +321,8 @@ export function Profile({ onSaved, resumeExtraction }: {
           <header>
             <div><h2>{label}</h2>{key === "basic" && <p>按需填写。网申仅使用你已保存的信息。</p>}</div>
             {key === "basic" && <div className="settings-profile-actions">
-              <span className={"workspace-tag" + (saved && !dirty ? " success" : "")}>
-                <Save size={15} aria-hidden="true" />{loading ? "正在读取" : dirty ? "更改待保存" : saved ? "已保存资料" : "本机保存"}
+              <span className={"workspace-tag" + (version && !dirty ? " success" : "")}>
+                <Save size={15} aria-hidden="true" />{loadState === "loading" ? "正在读取" : loadState === "failed" ? "读取失败" : dirty ? "更改待保存" : version ? "已保存资料" : "本机保存"}
               </span>
               <Button type="button" variant="secondary" onClick={() => void perform(async () =>
                 applyResume(await request<Extraction>("extract_resume_profile")))}>
@@ -415,8 +443,13 @@ export function Profile({ onSaved, resumeExtraction }: {
         </article>
       </div>
       <div className="settings-profile-footer">
-        <span className="settings-profile-hint">留空字段会跳过。网站的必填项缺失时，需要你补充。</span>
-        <Button type="button" disabled={!dirty} onClick={save}>{busy ? "处理中…" : "保存个人信息"}</Button>
+        {versionConflict ? <>
+          <span className="settings-profile-hint" role="alert">其他窗口已更新个人信息。本页草稿已保留，请先复制需要保留的改动。</span>
+          <Button type="button" variant="secondary" onClick={discardAndReload}>放弃草稿并读取最新版</Button>
+        </> : <>
+          <span className="settings-profile-hint">留空字段会跳过。网站的必填项缺失时，需要你补充。</span>
+          <Button type="button" disabled={!dirty} onClick={save}>{busy ? "处理中…" : "保存个人信息"}</Button>
+        </>}
       </div>
     </fieldset>
   </section>;

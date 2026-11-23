@@ -6,14 +6,14 @@ import { BriefcaseBusiness, Cable, ChevronRight, ClipboardCheck, ContactRound, F
 import { native, request } from "./bridge";
 import packageInfo from "../package.json";
 import { TaskSetup } from "./pages/TaskSetup";
-import { Inbox, attentionCategory } from "./pages/Inbox";
+import { Inbox } from "./pages/Inbox";
 import { SettingsContent, ConnectionDiagnostics, type BrowserDiagnostic } from "./pages/SettingsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { Records } from "./pages/Records";
-import { Overview, type OverviewCategory } from "./pages/Overview";
+import { Overview } from "./pages/Overview";
 import { Workbench, type ExecutionLine } from "./pages/Workbench";
-import { isActiveRun } from "./workspace";
-import type { BrowserState, Connection, ExecutorEvent, Run, Snapshot } from "./contracts";
+import { beginningOfWeek, isActiveRun } from "./workspace";
+import type { AttentionCategory, BrowserState, Connection, ExecutorEvent, Run, Snapshot } from "./contracts";
 
 const profileNavigation = [
   ["resume", "简历", FileUser],
@@ -29,13 +29,24 @@ const navigation = [
   ...profileNavigation,
 ] as const;
 type Page = (typeof navigation)[number][0] | "boss" | "companies" | "running";
+type SnapshotView = "home" | "tasks" | "running" | "inbox" | "boss" | "companies" | "shell";
+type SnapshotScope = { view: SnapshotView; run_id?: string };
+
+function snapshotScope(page: Page, runId: string): SnapshotScope {
+  if (page === "running") return { view: page, run_id: runId };
+  if (page === "home" || page === "tasks" || page === "inbox" || page === "boss" || page === "companies") return { view: page };
+  return { view: "shell" };
+}
+
 const empty: Snapshot = { runs: [], attempts: [], attention: [], fields: [], evidence: [], frame: null };
 const taskPages = new Set<Page>(["tasks", "boss", "companies", "running"]);
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
-  const [todoCategory, setTodoCategory] = useState<OverviewCategory>();
-  const [snapshot, setSnapshot] = useState<Snapshot>(empty);
+  const [todoCategory, setTodoCategory] = useState<AttentionCategory>();
+  const selectedScope = useRef<SnapshotScope>({ view: "home" });
+  const [loaded, setLoaded] = useState<{ scope: SnapshotScope; data: Snapshot }>();
+  const snapshot = loaded?.scope === selectedScope.current ? loaded.data : empty;
   const [connection, setConnection] = useState<Connection>({
     state: "disconnected",
     message: "AI 模式需要连接 Codex。脚本模式无需模型。",
@@ -44,6 +55,7 @@ export default function App() {
   const [diagnostic, setDiagnostic] = useState<BrowserDiagnostic>();
   const [resumeReady, setResumeReady] = useState<boolean>();
   const [runId, setRunId] = useState("");
+  const snapshotRequest = useRef<{ scope: SnapshotScope; promise: Promise<void> } | undefined>(undefined);
   const [editingRun, setEditingRun] = useState<Run>();
   const [runProblem, setRunProblem] = useState<{ id: string; text: string }>();
   const [startingRun, setStartingRun] = useState("");
@@ -55,20 +67,34 @@ export default function App() {
   const [messages, setMessages] = useState<ExecutionLine[]>([]);
   const scroller = useRef<HTMLDivElement>(null);
   const desktop = isTauri();
+  const loadingView = desktop && snapshot === empty && selectedScope.current.view !== "shell";
   const run = snapshot.runs.find((value) => value.id === runId);
   const frameId = page === "running" && snapshot.frame?.run_id === runId ? snapshot.frame?.id : undefined;
-  const browserInUse = snapshot.runs.some(isActiveRun);
+  const browserInUse = (loaded?.data.active_run_count ?? 0) > 0;
   const browserReady = Boolean(browser.connected && !browser.connecting && browser.pinned_target);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (afterCurrent = false) => {
     if (!isTauri()) return;
-    try {
-      const current = await request<Snapshot>("snapshot", { run_id: runId });
-      setSnapshot(current);
-      setStartingRun((id) => id && current.runs.some((row) => row.id === id && isActiveRun(row)) ? "" : id);
-    } catch (failure) {
-      setError(String(failure));
+    const scope = selectedScope.current;
+    const pending = snapshotRequest.current;
+    if (pending?.scope === scope) {
+      if (!afterCurrent) return pending.promise;
+      await pending.promise;
+      if (selectedScope.current !== scope) return;
+      if (snapshotRequest.current?.scope === scope) return snapshotRequest.current.promise;
     }
-  }, [runId]);
+    const params = scope.view === "home" ? { ...scope, week_start: new Date(beginningOfWeek(new Date())).toISOString() } : scope;
+    const promise = request<Snapshot>("snapshot", params).then((current) => {
+      if (selectedScope.current !== scope) return;
+      setLoaded({ scope, data: current });
+      setStartingRun((starting) => starting && current.runs.some((row) => row.id === starting && isActiveRun(row)) ? "" : starting);
+    }).catch((failure) => {
+      if (selectedScope.current === scope) setError(String(failure));
+    }).finally(() => {
+      if (snapshotRequest.current?.scope === scope) snapshotRequest.current = undefined;
+    });
+    snapshotRequest.current = { scope, promise };
+    return promise;
+  }, []);
   const loadResume = useCallback(() => {
     if (!isTauri()) return;
     void request("get_resume").then((resume) => setResumeReady(Boolean(resume))).catch(() => setResumeReady(undefined));
@@ -91,7 +117,7 @@ export default function App() {
         setStartingRun((current) => current === id ? "" : current);
       }
       if (type === "error") setRunProblem({ id, text: String(payload.message || "执行已暂停") });
-      if (type !== "message") void refresh();
+      if (type !== "message") void refresh(true);
     });
     return () => {
       window.clearInterval(timer);
@@ -131,15 +157,28 @@ export default function App() {
     setBusy(true);
     try {
       await action();
-      await refresh();
+      await refresh(true);
     } catch (failure) {
       setError(String(failure));
     } finally {
       setBusy(false);
     }
   };
-  const navigate = (next: Page) => { setNotice(""); setError(""); setPage(next); };
-  const openRun = (id: string) => { setEditingRun(undefined); setRunId(id); navigate("running"); };
+  const navigate = (next: Page, id = runId) => {
+    setNotice("");
+    setError("");
+    const scope = snapshotScope(next, id);
+    if (selectedScope.current.view !== scope.view || selectedScope.current.run_id !== scope.run_id) {
+      selectedScope.current = scope;
+      void refresh(true);
+    }
+    setPage(next);
+  };
+  const openRun = (id: string) => {
+    setEditingRun(undefined);
+    setRunId(id);
+    navigate("running", id);
+  };
   const openTask = (channel: "boss" | "web" = "boss") => {
     setEditingRun(undefined);
     navigate(channel === "boss" ? "boss" : "companies");
@@ -150,7 +189,7 @@ export default function App() {
     navigate(run.config.channels.includes("boss") ? "boss" : "companies");
   };
   const control = (action: string) => perform(async () => {
-    setStartingRun(action === "running" || action === "watching" ? runId : "");
+    setStartingRun(action === "prepare_company" || action === "running" || action === "watching" ? runId : "");
     setRunProblem(undefined);
     try {
       await native("executor_control", { runId, action });
@@ -178,7 +217,7 @@ export default function App() {
   const profilePage = profileNavigation.find(([key]) => key === page);
   const subTitle = editingRun && (page === "boss" || page === "companies") ? "编辑任务"
     : ({ boss: "BOSS 新建投递", companies: "公司网申", running: "执行工作台" } as Partial<Record<Page, string>>)[page];
-  const attentionCount = snapshot.attention.filter((row) => !row.resolved).length;
+  const attentionCount = loaded?.data.pending_count ?? 0;
   const windowControl = (command: "minimize" | "toggleMaximize" | "close") => {
     void getCurrentWindow()[command]().catch((failure) => setError(String(failure)));
   };
@@ -216,16 +255,17 @@ export default function App() {
         {!desktop && <div className="banner">浏览器界面预览，执行器未连接。请从桌面应用启动任务。</div>}
         {error && <div className="banner error" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError("")}><X size={16} /></button></div>}
         {notice && <div className="banner" role="status">{notice}</div>}
-        {page === "home" && <Overview snapshot={snapshot} resumeReady={resumeReady} classify={attentionCategory}
-          onNew={openTask} onRun={openRun} onTodo={(category) => { setTodoCategory(category); navigate("inbox"); }}
+        {loadingView && !error && <p role="status">正在读取…</p>}
+        {!loadingView && page === "home" && <Overview snapshot={snapshot} resumeReady={resumeReady}
+          onNew={() => openTask("boss")} onRun={openRun} onTodo={(category) => { setTodoCategory(category); navigate("inbox"); }}
           onRecords={() => navigate("history")} onResume={() => navigate("resume")} />}
-        {page === "tasks" && <TasksPage snapshot={snapshot} onNew={openTask} onOpen={openRun} />}
-        {(page === "boss" || page === "companies") && <TaskSetup key={`${page}:${editingRun?.id ?? "new"}`} channel={page === "boss" ? "boss" : "web"}
+        {!loadingView && page === "tasks" && <TasksPage snapshot={snapshot} onNew={openTask} onOpen={openRun} />}
+        {!loadingView && (page === "boss" || page === "companies") && <TaskSetup key={`${page}:${editingRun?.id ?? "new"}`} channel={page === "boss" ? "boss" : "web"}
           initialRun={editingRun} latestRun={snapshot.runs.find((item) => !item.config.simulation && item.config.channels.includes(page === "boss" ? "boss" : "web"))}
           onSwitchChannel={openTask} onBack={() => editingRun ? openRun(editingRun.id) : navigate("tasks")}
           browserReady={browserReady} codexReady={connection.state === "ready"} onMaterials={navigate}
-          onCreated={(id) => { setRunProblem(undefined); openRun(id); void refresh(); }} />}
-        {page === "running" && <Workbench key={runId} run={run} snapshot={snapshot} messages={messages} busy={busy}
+          onCreated={(id) => { setRunProblem(undefined); openRun(id); }} />}
+        {!loadingView && page === "running" && <Workbench key={runId} run={run} snapshot={snapshot} messages={messages} busy={busy}
           starting={Boolean(run && startingRun === run.id && !isActiveRun(run))}
           browserReady={browserReady} codexReady={connection.state === "ready"}
           previewKey={run && !run.config.simulation && run.config.channels.includes("boss") && run.status !== "stopped" && browserReady
@@ -233,13 +273,23 @@ export default function App() {
           frame={savedFrame && savedFrame.id === frameId ? savedFrame.url : ""}
           problem={runProblem?.id === runId ? runProblem.text : undefined}
           onBack={() => navigate("tasks")} onControl={(action) => void control(action)}
+          onCompanyRow={(action, sourceRow) => void perform(async () => {
+            try {
+              await native(action, { runId, sourceRow });
+            } catch (failure) {
+              if (action === "company_focus_tab") await refresh(true);
+              throw failure;
+            }
+          })}
+          onProfile={() => navigate("profile")}
+          onConnectCodex={() => void perform(async () => { setConnection(await native<Connection>("codex_connect", { reuseLogin: false })); })}
           onEdit={run && !run.config.simulation ? editTask : undefined}
           onWatch={run && !run.config.simulation && ["paused", "completed"].includes(run.status) ? () => void control("watching") : undefined}
           onBrowserSetup={() => run?.config.simulation ? void perform(async () => { await request("open_simulation", { run_id: runId }); }) : navigate("connections")}
           onImage={(kind, identity) => void perform(async () => { setImage((await request<{ url: string }>("read_image", { kind, identity })).url); })} />}
-        {page === "history" && <Records snapshot={snapshot} onExport={exportRecords} exporting={busy} />}
-        {page === "inbox" && <Inbox key={todoCategory ?? "all"} snapshot={snapshot} onChanged={refresh} initialCategory={todoCategory} />}
-        {profilePage && <><header className="workspace-title"><h1>{profilePage[1]}</h1></header><SettingsContent active={profilePage[0]} onProfile={() => navigate("profile")} onSaved={async () => { loadResume(); await refresh(); }}
+        {page === "history" && <Records onExport={exportRecords} exporting={busy} />}
+        {!loadingView && page === "inbox" && <Inbox key={todoCategory ?? "all"} snapshot={snapshot} onChanged={() => refresh(true)} initialCategory={todoCategory} />}
+        {profilePage && <><header className="workspace-title"><h1>{profilePage[1]}</h1></header><SettingsContent active={profilePage[0]} onProfile={() => navigate("profile")} onSaved={async () => { loadResume(); await refresh(true); }}
           diagnostics={<ConnectionDiagnostics browser={browser} connection={connection} busy={busy} browserInUse={browserInUse} desktop={desktop}
             diagnostic={diagnostic}
             onConnectChrome={() => void connectChrome()}

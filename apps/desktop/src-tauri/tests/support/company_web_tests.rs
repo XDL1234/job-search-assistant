@@ -22,6 +22,35 @@ struct Batch {
 }
 
 impl Batch {
+    async fn ledger(&self, request: Value) -> Value {
+        self.worker.call("company_web", json!({"run_id":self.run,
+            "control_generation":self.generation,"request":request})).await.unwrap()
+    }
+
+    async fn scan(&mut self, prepare: bool) -> Value {
+        self.worker.call("control_run", json!({"run_id":self.run,"action":"running"})).await.unwrap();
+        self.worker.call("activate_run", json!({"run_id":self.run})).await.unwrap();
+        let context = self.worker.call("execution_context",json!({"run_id":self.run})).await.unwrap();
+        self.generation = context["control_generation"].as_i64().unwrap();
+        let batch = self.ledger(json!({"operation":"prepare_batch","prepare_only":prepare})).await;
+        let rows = batch["rows"].as_array().unwrap();
+        let occupied = batch["occupied_targets"].as_array().unwrap();
+        let checks = if prepare {
+            self.browser.prepare_batch(&self.worker,&self.run,self.generation,rows,occupied).await.unwrap()
+        } else {
+            self.browser.check_batch(&self.worker,&self.run,self.generation,rows,occupied).await.unwrap()
+        };
+        self.ledger(json!({"operation":"record_checks","phase":if prepare {"prepare"} else {"check"},"checks":checks})).await
+    }
+
+    async fn user_action(&self, name: &str) {
+        let signal = self.worker.root.join(name);
+        std::fs::write(&signal, []).unwrap();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while std::fs::metadata(&signal).unwrap().len() == 0 { tokio::time::sleep(Duration::from_millis(100)).await; }
+        }).await.expect("等待模拟用户操作超时");
+    }
+
     async fn request(&self, mut request: Value) -> Result<Value, String> {
         let include_image = request["include_image"] == true;
         request["operation"] = json!("web");
@@ -182,7 +211,7 @@ async fn preview_jpeg(events: &mut mpsc::UnboundedReceiver<Value>, epoch: &str) 
 #[tokio::test]
 #[ignore = "需由 Python 启动隔离 Chrome 与合成公司网站"]
 async fn synthetic_company_batch() {
-    let batch = Batch {
+    let mut batch = Batch {
         browser: CompanyWeb::default(),
         worker: WorkerClient::from_environment(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap(),
         run: std::env::var("JOB_ASSISTANT_TEST_WEB_RUN").unwrap(),
@@ -193,6 +222,10 @@ async fn synthetic_company_batch() {
     };
     let mut preview = batch.browser.preview_updates();
     assert!(preview.borrow_and_update().is_none());
+    assert_eq!(batch.scan(true).await["state"], "paused");
+    assert_eq!(batch.scan(false).await["eligible_count"], 4);
+    let scope = batch.must(json!({"action":"scope"})).await;
+    assert_eq!(scope["rows"].as_array().unwrap().iter().map(|r|r["source_row"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2,3,4,6]);
     let unavailable = batch
         .request(json!({"action":"open","source_row":99}))
         .await;
@@ -202,40 +235,7 @@ async fn synthetic_company_batch() {
         "清单外页面不能接入预览"
     );
 
-    let foreign = batch
-        .wait_for_control(batch.open(6).await, "进入申请表")
-        .await;
-    let page = batch.click(&foreign, "进入申请表").await;
-    let page = batch.wait_for_control(page, "学校名称").await;
-    let wrong_company = batch
-        .request(json!({"action":"begin","snapshot":page["snapshot"],
-        "job":"软件测试工程师"}))
-        .await;
-    assert!(wrong_company.is_err(), "同源同岗位也不能给未授权公司填写");
-
-    let page = batch.must(json!({"action":"observe"})).await;
-    let handoff = batch.must(json!({"action":"handoff","snapshot":page["snapshot"],"reason":"页面公司不匹配"})).await;
-    assert_eq!(handoff["terminal"], true);
-    assert!(handoff["attention"]["id"].is_string() && handoff["evidence_id"].is_null());
-
-    let mut verification = batch.open(5).await;
-    for _ in 0..25 {
-        if verification["blocked"].is_string() && verification["document"].is_string() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        verification = batch.must(json!({"action":"observe"})).await;
-    }
-    assert!(verification["blocked"].as_str().unwrap().contains("验证码"));
-    assert!(verification["controls"].as_array().unwrap().is_empty());
-    let verification_target = preview.borrow_and_update().clone();
-    if let Some(target) = verification_target {
-        assert!(
-            target.page.preview_frame().await.unwrap().is_none(),
-            "安全验证画面不能进入预览"
-        );
-    }
-    batch.must(json!({"action":"handoff","snapshot":verification["snapshot"],"reason":"等待用户完成安全验证"})).await;
+    assert!(batch.request(json!({"action":"open","source_row":5})).await.is_err(), "验证码页面不能交给模型");
 
     let runtime = BrowserRuntime::new(&batch.worker.resources, &batch.worker.root);
     let (send, mut events) = mpsc::unbounded_channel();
@@ -315,6 +315,9 @@ async fn synthetic_company_batch() {
             json!({"action":"handoff","snapshot":page["snapshot"],"reason":"缺少必填职业资格编号"}),
         )
         .await;
+    let partial = batch.ledger(json!({"operation":"finish_batch"})).await;
+    assert_eq!(partial["state"], "incomplete");
+    assert_eq!(partial["eligible_count"], 3, "模型提前结束回合时，其他可填写公司继续保留执行权");
 
     // 长页布局新增教育弹窗，两站名称不同的学校字段都从相同资料来源填写。
     batch
@@ -403,13 +406,24 @@ async fn synthetic_company_batch() {
         batch.request(submission).await.is_err(),
         "待核查申请不能重复提交"
     );
+    let foreign = batch.open(6).await;
+    let page = batch.click(&foreign, "进入申请表").await;
+    let page = batch.wait_for_control(page, "学校名称").await;
+    assert!(batch.request(json!({"action":"begin","snapshot":page["snapshot"],
+        "job":"软件测试工程师"})).await.is_err(), "同源同岗位也不能给未授权公司填写");
+    let page = batch.must(json!({"action":"observe"})).await;
+    let handoff = batch.must(json!({"action":"handoff","snapshot":page["snapshot"],"reason":"页面公司不匹配"})).await;
+    assert_eq!(handoff["terminal"], true);
+    assert!(handoff["attention"]["id"].is_string() && handoff["evidence_id"].is_null());
+    assert_eq!(batch.ledger(json!({"operation":"finish_batch"})).await["state"], "paused");
     running.store(false, Ordering::SeqCst);
     batch.browser.clear_preview(&batch.run);
+    // 外部企业那一行的状态和画面可能已在 IPC 队列中；此处只检查暂停后的新推送。
+    while events.try_recv().is_ok() {}
     assert!(
         preview.borrow_and_update().is_none(),
         "暂停任务后预览应解除标签页绑定"
     );
-    preview_event(&mut events, |event| event["state"] == "waiting").await;
     let frame_after_pause = tokio::time::timeout(Duration::from_millis(650), async {
         while let Some(event) = events.recv().await {
             if event["type"] == "frame" {
@@ -427,7 +441,8 @@ async fn synthetic_company_batch() {
     runtime.stop_preview_if_epoch(epoch).await;
     preview_event(&mut events, |event| event["state"] == "stopped").await;
 
-    let manual = Batch {
+    batch.user_action("fixture-close-auto").await;
+    let mut manual = Batch {
         browser: CompanyWeb::default(),
         worker: batch.worker,
         run: std::env::var("JOB_ASSISTANT_TEST_WEB_MANUAL_RUN").unwrap(),
@@ -436,7 +451,14 @@ async fn synthetic_company_batch() {
             .parse()
             .unwrap(),
     };
-    let page = manual.wait_for_control(manual.open(2).await, "进入申请表").await;
+    assert_eq!(manual.scan(true).await["state"], "paused");
+    let login = manual.scan(false).await;
+    assert_eq!(login["eligible_count"], 0);
+    assert_eq!(login["state"], "paused");
+    manual.user_action("fixture-login-second").await;
+    assert_eq!(manual.scan(false).await["eligible_count"], 1);
+    assert!(manual.request(json!({"action":"open","source_row":2})).await.is_err());
+    let page = manual.open(3).await;
     let page = manual.click(&page, "进入申请表").await;
     let page = manual.wait_for_control(page, "学校名称").await;
     let page = manual.begin(&page, "软件测试工程师").await;
@@ -448,10 +470,40 @@ async fn synthetic_company_batch() {
     let page = manual.must(json!({"action":"observe"})).await;
     assert!(manual.request(control_request(&page, "click", "确认提交")).await.is_err(), "普通点击也不能提交");
     let page = manual.must(json!({"action":"observe"})).await;
-    let ready = manual.must(ready_request(&page, "确认提交")).await;
+    let page = manual.click(&page, "下一步").await;
+    assert_eq!(page["finalReview"], true);
+    let ready = manual.must(json!({"action":"ready","snapshot":page["snapshot"],"reviewed":true})).await;
     assert_eq!(ready["status"], "needs_user");
-    assert_eq!(ready["paused"], true);
+    assert_ne!(ready["paused"], true);
     assert_eq!(ready["terminal"], true);
-    assert!(has_control(&ready, "确认提交"), "交接应保留当前已填表单");
-    assert!(manual.request(json!({"action":"open","source_row":3})).await.is_err(), "交接后不切到下一家公司");
+    assert_eq!(ready["finalReview"], true, "交接应保留明确的只读核对页");
+    assert_eq!(manual.ledger(json!({"operation":"finish_batch"})).await["state"], "paused");
+    manual.user_action("fixture-login-first").await;
+    // 模拟桌面运行时重建，只靠台账与本次 Chrome 实例身份找回原标签。
+    manual.browser = CompanyWeb::default();
+    assert_eq!(manual.scan(false).await["eligible_count"], 1);
+    assert!(manual.request(json!({"action":"open","source_row":3})).await.is_err(), "已填写草稿不应再处理");
+    let page = manual.open(2).await;
+    assert_eq!(control(&page, "职位")["kind"], "careerNavigation");
+    assert_ne!(control(&page, "立即投递")["kind"], "careerNavigation");
+    let page = manual.click(&page, "职位").await;
+    let mut search = control_request(&page, "search", "搜索职位");
+    search["query"] = json!("另一个岗位");
+    search["run_search"] = json!(true);
+    assert!(manual.request(search.clone()).await.is_err());
+    let page = manual.must(json!({"action":"observe"})).await;
+    search["snapshot"] = page["snapshot"].clone();
+    search["query"] = json!("软件测试");
+    let page = manual.must(search).await;
+    let page = manual.click(&page, "进入申请表").await;
+    let page = manual.wait_for_control(page, "学校名称").await;
+    let page = manual.begin(&page, "软件测试工程师").await;
+    let page = manual.basics(&page).await;
+    let page = manual.fill(&page, &["学校名称"], "profile.education.0.school").await;
+    manual.must(ready_request(&page, "确认提交")).await;
+    assert_eq!(manual.ledger(json!({"operation":"finish_batch"})).await["state"], "paused");
+    for number in [2,3] {
+        let row = manual.worker.call("company_queue_row",json!({"run_id":manual.run,"source_row":number})).await.unwrap();
+        manual.browser.focus_row(&manual.worker,&manual.run,number,&row).await.unwrap();
+    }
 }

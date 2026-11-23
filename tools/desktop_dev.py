@@ -20,10 +20,15 @@ def environment():
     env['CARGO_TARGET_DIR'] = str(ROOT / 'apps/desktop/src-tauri/target')
     env.setdefault('JOB_ASSISTANT_DATA_DIR', str(ROOT / '.verification/desktop-app/data'))
     env.setdefault('JOB_ASSISTANT_REPO', str(ROOT))
-    sys.path.insert(0, str(ROOT / 'skills/job-search-assistant/scripts'))
-    from job_assistant.bootstrap import setup, default_root
-    runtime = setup(default_root(), False)
-    env.setdefault('JOB_ASSISTANT_PYTHON', runtime['python'] if runtime['ready'] else sys.executable)
+    sys.path.insert(0, str(ROOT / 'apps/worker/scripts'))
+    if 'JOB_ASSISTANT_PYTHON' not in env:
+        from job_assistant.bootstrap import setup
+        build_python = ROOT / '.verification/desktop-release/python/Scripts/python.exe'
+        if build_python.is_file():
+            env['JOB_ASSISTANT_PYTHON'] = str(build_python)
+        else:
+            runtime = setup(ROOT / '.verification/desktop-app', False)
+            env['JOB_ASSISTANT_PYTHON'] = runtime['python'] if runtime['ready'] else sys.executable
     shim = shutil.which('codex.cmd')
     bundled = ROOT / 'apps/desktop/src-tauri/resources/codex/bin/codex.exe'
     if bundled.is_file():

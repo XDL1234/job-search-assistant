@@ -8,16 +8,16 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(ROOT / 'apps/worker/scripts'))
 
 
 class DesktopReleaseTests(unittest.TestCase):
-    def test_frozen_skill_root_is_inside_bundle(self):
+    def test_frozen_worker_resources_are_inside_bundle(self):
         from job_assistant import bootstrap
         with tempfile.TemporaryDirectory() as temp:
             with patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', temp, create=True):
-                self.assertEqual(bootstrap.skill_root(), Path(temp) / 'skill')
-        self.assertEqual(bootstrap.skill_root(), ROOT / 'skills/job-search-assistant')
+                self.assertEqual(bootstrap.worker_root(), Path(temp) / 'worker-data')
+        self.assertEqual(bootstrap.worker_root(), ROOT / 'apps/worker')
 
     def test_desktop_versions_and_installer_are_consistent(self):
         import tomllib

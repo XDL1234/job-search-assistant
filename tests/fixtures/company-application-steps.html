@@ -14,6 +14,7 @@
     legend { font-weight: bold; border-bottom: 1px solid #d4ded7; width: 100%; }
     input, textarea, button, a { padding: 8px; }
     #next { display: inline-block; border: 1px solid #33876a; }
+    #next[hidden] { display: none; }
     body::after { content: ""; position: fixed; right: 0; bottom: 0; width: 32px; height: 32px; background: #df2a17; pointer-events: none; }
   </style>
 </head>
@@ -22,11 +23,14 @@
     <h1>软件测试工程师 · 微江研发</h1>
     <section id="intro">
       <h2>在线申请</h2>
+      <a href="#account">登录</a>
+      <ul role="listbox" id="career-nav" hidden><li role="option" style="cursor:pointer">职位</li><li role="option" style="cursor:pointer">立即投递</li></ul>
+      <label id="job-search" hidden>搜索职位<input type="search"></label>
       <a id="next" href="?stage=edit">进入申请表</a>
     </section>
     <section id="verification" hidden>
-      <h2>请完成安全验证</h2>
-      <label for="code">验证码</label><input id="code" autocomplete="one-time-code">
+      <div><img alt="微信登录二维码"><div>请使用微信扫码登录</div></div>
+      <button type="button" id="login" hidden>完成模拟登录</button>
     </section>
     <form id="application" hidden>
       <fieldset>
@@ -46,15 +50,77 @@
       <button type="submit">确认提交</button>
     </form>
     <section id="processing" role="status" hidden><h2>系统正在处理</h2><p>请稍后查看页面。</p></section>
+    <section id="review" hidden><h2>最终核对</h2><p>申请表已填写完整</p></section>
   </main>
   <script>
     const form = document.querySelector('#application');
     const parameters = new URLSearchParams(location.search);
     const scenario = parameters.get('scenario') || 'ambiguous';
     const editing = parameters.get('stage') === 'edit';
-    const verification = scenario === 'verification';
+    const loginExample = ['search','popup'].includes(scenario);
+    const verification = scenario === 'verification' || (loginExample && !localStorage.getItem(location.pathname));
+    const login = document.querySelector('#login');
+    login.hidden = !loginExample;
+    login.onclick = () => { localStorage.setItem(location.pathname, 'ok'); location.reload(); };
+    if (scenario === 'popup') document.querySelector('#next').target = '_blank';
+    if (scenario === 'popup' && editing) {
+      const school = document.querySelector('#school');
+      school.closest('fieldset').insertAdjacentHTML('afterbegin',
+        '<label>已有教育经历<input value="已有院校" required></label>');
+      school.setAttribute('role', 'combobox');
+      school.setAttribute('aria-autocomplete', 'list');
+      school.setAttribute('aria-controls', 'school-results');
+      school.setAttribute('aria-expanded', 'false');
+      school.insertAdjacentHTML('afterend', '<div role="listbox" id="school-results" hidden></div>');
+      const results = document.querySelector('#school-results');
+      school.oninput = () => {
+        results.hidden = false;
+        school.setAttribute('aria-expanded', 'true');
+        results.innerHTML = '';
+        if (!school.value) return;
+        setTimeout(() => {
+          results.innerHTML = '<div role="option">合成大学研究院</div><div role="option">合成大学</div>';
+        }, 80);
+      };
+      results.onclick = event => {
+        if (event.target.getAttribute('role') !== 'option') return;
+        school.value = event.target.textContent;
+        event.target.setAttribute('aria-selected', 'true');
+        school.dataset.selected = school.value;
+        school.setAttribute('aria-expanded', 'false');
+        results.hidden = true;
+      };
+      const next = document.createElement('button');
+      next.type = 'button';
+      next.textContent = '下一步';
+      next.onclick = () => {
+        if (!form.reportValidity() || school.dataset.selected !== school.value) return;
+        form.hidden = true;
+        document.querySelector('#review').hidden = false;
+      };
+      form.append(next);
+    }
+    if (scenario === 'search' && !editing && !verification) {
+      const search = document.querySelector('#job-search');
+      const navigation = document.querySelector('#career-nav');
+      navigation.hidden = false;
+      navigation.firstElementChild.onclick = () => { search.hidden = false; };
+      const entry = document.querySelector('#next');
+      entry.hidden = true;
+      search.querySelector('input').onkeydown = event => {
+        if (event.key === 'Enter') entry.hidden = event.target.value !== '软件测试';
+      };
+    }
     window.testSubmitCount = 0;
     document.querySelector('#next').href = '?stage=edit&scenario=' + encodeURIComponent(scenario);
+    if (scenario === 'missing' && !editing) {
+      const entry = document.querySelector('#next');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = entry.textContent;
+      button.onclick = () => location.assign(entry.href);
+      entry.replaceWith(button);
+    }
     document.querySelector('#intro').hidden = editing || verification;
     document.querySelector('#verification').hidden = !verification;
     form.hidden = !editing || verification;

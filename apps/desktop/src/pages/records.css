@@ -253,6 +253,19 @@
 }
 .records-filters select { width: 100%; min-width: 0; }
 .records-count { flex: none; margin: 0; padding: 8px 12px; font-size: 13px; }
+.records-pagination {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: auto;
+  padding: 7px 12px;
+  border-top: 1px solid var(--records-border);
+  font-size: 13px;
+}
+.records-pagination span { margin-right: auto; }
+.records-pagination .button { min-height: 30px; padding: 4px 8px; }
 .records-table-scroll { min-height: 0; overflow: auto; }
 .records-table-scroll table { table-layout: fixed; min-width: 365px; font-size: 14px; }
 .records-table-scroll td,

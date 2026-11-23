@@ -1,5 +1,7 @@
 //! agent-browser 的本机生命周期与只读 JPEG 订阅；媒体不经过 Python worker。
 use crate::company_web::CompanyPreviewTarget;
+use crate::web_autofill::Cdp;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -7,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU16, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -94,6 +96,7 @@ pub struct BrowserRuntime {
     token: String,
     state: Arc<StdMutex<Value>>,
     started: AtomicBool,
+    cdp_port: AtomicU16,
     command_lock: Mutex<()>,
     preview_control: Mutex<()>,
     preview: Mutex<Option<PreviewSession>>,
@@ -131,6 +134,7 @@ impl BrowserRuntime {
             token,
             state: Arc::new(StdMutex::new(state)),
             started: AtomicBool::new(false),
+            cdp_port: AtomicU16::new(0),
             command_lock: Mutex::new(()),
             preview_control: Mutex::new(()),
             preview: Mutex::new(None),
@@ -409,6 +413,11 @@ impl BrowserRuntime {
             .get("tabs")
             .and_then(Value::as_array)
             .ok_or("浏览器未返回可核对的标签列表")?;
+        let port = args.windows(2).find(|pair| pair[0] == "--cdp")
+            .and_then(|pair| tauri::Url::parse(pair[1]).ok())
+            .filter(|url| url.scheme() == "ws" && url.host_str() == Some("127.0.0.1"))
+            .and_then(|url| url.port()).unwrap_or_default();
+        self.cdp_port.store(port, Ordering::SeqCst);
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state["connected"] = json!(true);
@@ -485,6 +494,9 @@ impl BrowserRuntime {
             self.output(&["stream", "status", "--json"], true).await?
         };
         let port = stream_port(&stream)?;
+        let cdp_port = self.cdp_port.load(Ordering::SeqCst);
+        let page_endpoint = (cdp_port != 0 && target_id.len() == 32 && target_id.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| format!("ws://127.0.0.1:{cdp_port}/devtools/page/{target_id}"));
         let epoch = uuid::Uuid::new_v4().to_string();
         let mut request = format!("ws://127.0.0.1:{port}/?pacing=ack&maxFps=5")
             .into_client_request()
@@ -515,7 +527,13 @@ impl BrowserRuntime {
                 state: "connected".into(),
                 message: "实时预览已连接".into(),
             });
-            let mut pending = None;
+            let mut pending: Option<(u64, Option<u64>)> = None;
+            let mut parked_stream_seq = None;
+            let mut delivered = 0u64;
+            let mut fallback = false;
+            let mut page = None;
+            let mut poll = tokio::time::interval(Duration::from_millis(750));
+            poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut last_seq = None;
             let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
             let mut last_received = tokio::time::Instant::now();
@@ -532,10 +550,35 @@ impl BrowserRuntime {
                         }
                         next_ack = ack_rx.recv() => {
                             let Some(seq) = next_ack else { break; };
-                            if pending == Some(seq) {
-                                writer.send(Message::Text(json!({"type":"ack","seq":seq}).to_string().into())).await
-                                    .map_err(|_| "预览确认发送失败")?;
+                            if let Some((_, stream_seq)) = pending.filter(|(id, _)| *id == seq) {
+                                let ack = if fallback { stream_seq } else { stream_seq.or_else(|| parked_stream_seq.take()) };
+                                if let Some(stream_seq) = ack {
+                                    writer.send(Message::Text(json!({"type":"ack","seq":stream_seq}).to_string().into())).await
+                                        .map_err(|_| "预览确认发送失败")?;
+                                }
                                 pending = None;
+                            }
+                        }
+                        _ = poll.tick(), if page_endpoint.is_some() && pending.is_none() => {
+                            let endpoint = page_endpoint.as_deref().unwrap();
+                            if page.is_none() {
+                                page = Some(Cdp::open(endpoint).await?);
+                            }
+                            let image = hidden_preview_frame(page.as_mut().unwrap(), &scope, fallback).await?;
+                            fallback = image.as_ref().is_some_and(|(_, hidden)| *hidden);
+                            if !fallback && image.is_none() {
+                                if let Some(seq) = parked_stream_seq.take() {
+                                    writer.send(Message::Text(json!({"type":"ack","seq":seq}).to_string().into())).await
+                                        .map_err(|_| "预览确认发送失败")?;
+                                }
+                            }
+                            if let Some((data, _)) = image {
+                                delivered += 1;
+                                let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |time| time.as_millis() as u64);
+                                on_event.send(PreviewEvent::Frame { epoch: event_epoch.clone(), seq: delivered,
+                                    data, metadata: json!({"timestamp":timestamp}) }).map_err(|_| "预览界面已关闭")?;
+                                pending = Some((delivered, None));
                             }
                         }
                         next = reader.next() => {
@@ -544,11 +587,19 @@ impl BrowserRuntime {
                                 Some(Ok(Message::Text(text))) => {
                                     let value: Value = serde_json::from_str(&text).map_err(|_| "预览消息格式无效")?;
                                     if value["type"] == "frame" {
-                                        if pending.is_some() { return Err("预览端未遵守单帧确认协议".into()); }
+                                        if parked_stream_seq.is_some() || pending.is_some_and(|(_, stream_seq)| stream_seq.is_some()) {
+                                            return Err("预览端未遵守单帧确认协议".into());
+                                        }
                                         let (seq, data) = validate_frame(&value, last_seq)?;
-                                        pending = Some(seq);
                                         last_seq = Some(seq);
-                                        on_event.send(PreviewEvent::Frame { epoch: event_epoch.clone(), seq,
+                                        if fallback || pending.is_some() {
+                                            // 保留一个未确认的原生帧，后台取帧期间暂停上游推送。
+                                            parked_stream_seq = Some(seq);
+                                            continue;
+                                        }
+                                        delivered += 1;
+                                        pending = Some((delivered, Some(seq)));
+                                        on_event.send(PreviewEvent::Frame { epoch: event_epoch.clone(), seq: delivered,
                                             data, metadata: value["metadata"].clone() })
                                             .map_err(|_| "预览界面已关闭")?;
                                     } else if value["type"] == "url" {
@@ -744,6 +795,32 @@ mod live_tests;
 
 fn allowed_boss_url(url: &str) -> bool {
     url == "https://www.zhipin.com" || url.starts_with("https://www.zhipin.com/")
+}
+
+async fn hidden_preview_frame(chrome: &mut Cdp, scope: &PageScope, was_hidden: bool) -> Result<Option<(String, bool)>, String> {
+    let visibility = chrome.command("Runtime.evaluate",
+        json!({"expression":"document.hidden","returnByValue":true})).await?;
+    let hidden = visibility["result"]["value"].as_bool().ok_or("无法确认绑定标签是否可见")?;
+    if !hidden && !was_hidden { return Ok(None); }
+    // 后台标签的合成器可能一直重复旧帧。取当前视口，并在返回前复核顶层文档。
+    let before = chrome.command("Page.getFrameTree", json!({})).await?;
+    let frame = &before["frameTree"]["frame"];
+    if !frame["url"].as_str().is_some_and(|url| scope.permits(url)) {
+        return Err("预览标签已离开授权 BOSS 网站".into());
+    }
+    if frame["loaderId"].as_str().is_none_or(str::is_empty) { return Ok(None); }
+    let picture = chrome.command("Page.captureScreenshot",
+        json!({"format":"jpeg","quality":65,"fromSurface":true,"captureBeyondViewport":false})).await?;
+    let after = chrome.command("Page.getFrameTree", json!({})).await?;
+    let current = &after["frameTree"]["frame"];
+    if !current["url"].as_str().is_some_and(|url| scope.permits(url)) {
+        return Err("预览标签已离开授权 BOSS 网站".into());
+    }
+    if current["loaderId"] != frame["loaderId"] || current["url"] != frame["url"] { return Ok(None); }
+    let bytes = crate::company_page::resize_capture(picture, 1280, 900).await?;
+    let data = STANDARD.encode(bytes);
+    if data.len() > MAX_MEDIA_BYTES { return Err("预览画面超过大小限制".into()); }
+    Ok(Some((data, hidden)))
 }
 
 fn automatic_target(state: &Value) -> Option<&str> {

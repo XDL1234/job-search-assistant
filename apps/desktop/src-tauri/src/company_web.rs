@@ -1,5 +1,5 @@
 //! 共享官网网申工具，浏览器目标、资料和提交权限均由本机验证。
-use crate::{company_page::CompanyPage, worker::WorkerClient};
+use crate::{company_page::{CompanyBrowser, CompanyPage}, worker::WorkerClient};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tauri::Url;
@@ -10,7 +10,11 @@ use uuid::Uuid;
 pub(crate) struct CompanyWeb {
     current: Mutex<Option<Session>>,
     preview: watch::Sender<Option<CompanyPreviewTarget>>,
+    prepare_lock: Mutex<()>,
 }
+
+#[path = "company_tabs.rs"]
+mod tabs;
 
 #[derive(Clone)]
 pub(crate) struct CompanyPreviewTarget {
@@ -23,7 +27,6 @@ struct Session {
     run: String,
     generation: i64,
     row: u64,
-    company: String,
     page: CompanyPage,
     job: Option<String>,
     document: Option<Value>,
@@ -100,30 +103,46 @@ impl Session {
     }
 
     fn shows_job(&self, job: &str) -> bool {
-        let normalize = |text: &str| text.split_whitespace().collect::<String>().to_lowercase();
-        let job = normalize(job);
-        let exact = |text: &str| normalize(text) == job;
-        self.observation["jobLabels"].as_array().into_iter().flatten().filter_map(Value::as_str)
-            .filter_map(|line| line.split_once(['：', ':']).map(|(_, label)| label)).any(exact)
-            || self.observation["headings"].as_array().into_iter().flatten().filter_map(Value::as_str)
-                .flat_map(|line| line.split(['·', '｜', '|', '—'])).any(exact)
+        shows_job(&self.observation, job)
     }
 
     fn shows_company(&self) -> bool {
-        self.observation["text"].as_str().is_some_and(|text|
-            text.to_lowercase().contains(&self.company.to_lowercase()))
+        self.observation["companyMatched"] == true
     }
 
     fn checked_form(&self) -> bool {
-        if self.observation["modal"] == true {
-            return self.document.as_ref() == self.observation.get("document");
-        }
-        self.shows_company() && self.job.as_deref().is_some_and(|job| self.shows_job(job))
+        (self.observation["modal"] != true || self.document.as_ref() == self.observation.get("document"))
+            && self.shows_company() && self.job.as_deref().is_some_and(|job| self.shows_job(job))
+    }
+}
+
+fn authorized_jobs(scope: &Value, source: u64) -> Vec<&str> {
+    let Some(row) = scope["rows"].as_array().into_iter().flatten().find(|r| r["source_row"] == source) else {return vec![];};
+    if let Some(job) = row["job"].as_str().filter(|s| !s.is_empty()) { return vec![job]; }
+    scope["target_roles"].as_array().into_iter().flatten().filter_map(Value::as_str).collect()
+}
+
+fn shows_job(observation: &Value, job: &str) -> bool {
+        let normalize = |text: &str| text.split_whitespace().collect::<String>().to_lowercase();
+        let job = normalize(job);
+        let exact = |text: &str| normalize(text) == job;
+        observation["jobLabels"].as_array().into_iter().flatten().filter_map(Value::as_str)
+            .filter_map(|line| line.split_once(['：', ':']).map(|(_, label)| label)).any(exact)
+            || observation["headings"].as_array().into_iter().flatten().filter_map(Value::as_str)
+                .flat_map(|line| line.split(['·', '｜', '|', '—'])).any(exact)
+    }
+
+impl Session {
+
+    fn public_url(&self) -> Option<String> {
+        let url = safe_page(self.observation["url"].as_str()?)?;
+        if self.blocked() { Some(Url::parse(&url).ok()?.origin().ascii_serialization()) }
+        else { Some(url) }
     }
 
     fn view(&self, extra: Value, image: Option<String>) -> Value {
         let mut view = self.observation.clone();
-        if let Some(url) = view["url"].as_str().and_then(safe_page) {
+        if let Some(url) = self.public_url() {
             view["url"] = json!(url);
         } else {
             view.as_object_mut().map(|object| object.remove("url"));
@@ -153,10 +172,6 @@ impl Session {
 }
 
 impl CompanyWeb {
-    pub(crate) async fn unfinished_company(&self, run: &str) -> Option<String> {
-        self.current.lock().await.as_ref().filter(|session| session.run == run && !session.terminal)
-            .map(|session| session.company.clone())
-    }
 
     pub(crate) fn preview_updates(&self) -> watch::Receiver<Option<CompanyPreviewTarget>> {
         self.preview.subscribe()
@@ -179,8 +194,10 @@ impl CompanyWeb {
         let mut scope = ledger.call(json!({"operation":"scope"})).await?;
         if action == "scope" {
             for row in scope["rows"].as_array_mut().into_iter().flatten() {
-                row["url"] = json!(row["url"].as_str().and_then(safe_page));
+                *row = json!({"source_row":row["source_row"],"company":row["company"],"job":row["job"],
+                    "status":row["status"],"url":row["url"].as_str().and_then(safe_page)});
             }
+            if let Some(fields) = scope.as_object_mut() { fields.remove("occupied_targets"); }
             return Ok(answer(scope, None));
         }
         let mut current = self.current.lock().await;
@@ -196,9 +213,19 @@ impl CompanyWeb {
                 let url = row["url"].as_str().ok_or("公司申请网址无效")?;
                 let company = field(row, "company", 200)?;
                 self.clear_preview(run);
-                let page = CompanyPage::open(&worker.root, url).await?;
+                let page = if row["status"].is_string() {
+                    let chrome = CompanyBrowser::connect(&worker.root, false).await?;
+                    let page = chrome.restore(field(row,"target_id",220)?, url, company)
+                        .ok_or("本行原标签已关闭，请继续检查以重新准备网页")?;
+                    let page = match row["destination_url"].as_str().filter(|s| !s.is_empty()) {
+                        Some(url) => page.with_destination(url)?, None => page,
+                    };
+                    ledger.call(json!({"operation":"select_row","source_row":source})).await?;
+                    page.activate().await?;
+                    page
+                } else { CompanyPage::open(&worker.root, url, company).await? };
                 self.preview.send_replace(Some(CompanyPreviewTarget { run: run.into(), generation, page: page.clone() }));
-                *current = Some(Session { run: run.into(), generation, row: source, company: company.into(), page, job: None, document: None,
+                *current = Some(Session { run: run.into(), generation, row: source, page, job: None, document: None,
                     attempt: None, snapshot: String::new(), observation: json!({"url":url}), terminal: false });
             }
         }
@@ -217,9 +244,17 @@ impl CompanyWeb {
         }
         // 清掉旧令牌。操作失败后也要重新观察，避免使用旧点击位置重试。
         session.snapshot.clear();
-        if matches!(action, "handoff" | "no_match") {
+        if matches!(action, "wait_login" | "handoff" | "no_match") {
             let reason = field(&request, "reason", 360)?;
             session.observe().await;
+            if session.observation["loginRequired"] == true && (action == "wait_login" ||
+                scope["rows"].as_array().into_iter().flatten().any(|r| r["source_row"] == session.row && r["status"].is_string())) {
+                let result = ledger.call(json!({"operation":"wait_login","source_row":session.row,
+                    "attempt_id":session.attempt,"reason":reason})).await?;
+                session.terminal = true;
+                return Ok(session.view(result,None));
+            }
+            if action == "wait_login" { return Err("当前网页未显示明确的登录或验证要求，请重新观察".into()); }
             if session.blocked() && action == "no_match" {
                 return Err("页面需要人工处理，请登记待办".into());
             }
@@ -229,7 +264,7 @@ impl CompanyWeb {
             }
             let note = session.observation["blocked"].as_str().map_or_else(String::new, |blocked|
                 format!("。当前网页状态（{blocked}）").chars().take(88).collect());
-            let url = session.observation["url"].as_str().and_then(safe_page).unwrap_or_else(|| "页面已离开".into());
+            let url = session.public_url().unwrap_or_else(|| "页面已离开".into());
             let reason = format!("{reason}（{}）{note}", url.chars().take(48).collect::<String>());
             let result = ledger.call(json!({"operation":action,"attempt_id":session.attempt,"reason":reason})).await?;
             session.terminal = true;
@@ -247,8 +282,9 @@ impl CompanyWeb {
             if session.blocked() || !session.shows_company() || !session.shows_job(job) {
                 return Err("当前页面无法核对授权岗位名称，请转人工或重新读取岗位详情".into());
             }
+            let row = scope["rows"].as_array().into_iter().flatten().find(|r| r["source_row"] == session.row);
             let entry = ledger.call(json!({"operation":"begin","source_row":session.row,
-                "job":job,"url":session.observation["url"]})).await?;
+                "job":job,"url":session.observation["url"],"target_id":row.map(|r| &r["target_id"])})).await?;
             session.attempt = Some(field(&entry, "attempt_id", 32)?.into());
             session.job = Some(job.into());
             session.document = session.observation.get("document").cloned();
@@ -259,17 +295,46 @@ impl CompanyWeb {
                 .ok_or("滚动量必须为 1 到 1200 像素")?;
             session.page.action(&session.observation, json!({"kind":"scroll","delta":delta})).await?;
         } else {
-            let reference = field(&request, "ref", 40)?;
-            let control = session.control(reference)?.clone();
+            let review_page = action == "ready" && request["ref"].is_null() && session.observation["finalReview"] == true;
+            let reference = if review_page { "" } else { field(&request, "ref", 40)? };
+            let control = if review_page { Value::Null } else { session.control(reference)?.clone() };
             if matches!(action, "submit" | "ready") {
                 return self.finish_form(&ledger, session, &request, reference, &control, scope["web_submit"] == true).await;
             }
             match action {
+                "search" => {
+                    if session.attempt.is_some() || control["kind"] != "search" { return Err("仅能在定位岗位时使用当前职位搜索框".into()); }
+                    let jobs = authorized_jobs(&scope, session.row);
+                    let chosen = match request["job"].as_str() {
+                        Some(job) if jobs.contains(&job) => job,
+                        None if jobs.len() == 1 => jobs[0],
+                        _ => return Err("请从本轮已授权岗位中选择搜索词".into()),
+                    };
+                    let query = if request["query"].is_null() { chosen } else {
+                        let query = field(&request, "query", 200)?;
+                        if query.chars().count() < 2 || !chosen.contains(query) {
+                            return Err("搜索词须使用已授权岗位名称中的连续词组".into());
+                        }
+                        query
+                    };
+                    session.page.action(&session.observation,json!({"kind":"search","ref":reference,"value":query,
+                        "runSearch":request["run_search"] == true})).await?;
+                }
                 "click" => {
-                    if session.attempt.is_some() && control["kind"] == "link" {
+                    if session.attempt.is_some() && matches!(control["kind"].as_str(),Some("link"|"externalForm"|"careerNavigation")) {
                         return Err("申请已绑定岗位，跳转链接须交给用户核对".into());
                     }
-                    session.page.action(&session.observation, json!({"kind":"click","ref":reference})).await?;
+                    let queued = scope["rows"].as_array().into_iter().flatten()
+                        .any(|r| r["source_row"] == session.row && r["status"].is_string());
+                    if control["kind"] == "careerNavigation" {
+                        session.page.action(&session.observation, json!({"kind":"formNode","ref":reference})).await?;
+                    } else if queued && control["kind"] == "formButton" {
+                        self.click_form_button(worker,&ledger,session,&scope,reference).await?;
+                    } else if queued && control["newTab"] == true {
+                        self.follow_link(worker,&ledger,session,&scope,&control,reference).await?;
+                    } else {
+                        session.page.action(&session.observation, json!({"kind":"click","ref":reference})).await?;
+                    }
                 }
                 "fill" | "upload" => {
                     if control["required"] != true {
@@ -310,7 +375,8 @@ impl CompanyWeb {
             return Err(if manual { "本轮已授权自动提交，请核对页面后执行提交" }
                 else { "本轮仅授权填写，请交给用户手动提交" }.into());
         }
-        if request["reviewed"] != true || control["kind"] != "submit" {
+        let review_page = manual && reference.is_empty() && session.observation["finalReview"] == true;
+        if request["reviewed"] != true || (!review_page && control["kind"] != "submit") {
             return Err("请先核对必填项、附件及当前提交控件".into());
         }
         let attempt = session.attempt.clone().ok_or("请先核对并登记本轮岗位")?;
@@ -332,7 +398,7 @@ impl CompanyWeb {
             return Err(format!("有未完成或无效的字段：{}。请补全或转人工", missing.join("、")));
         }
         if manual {
-            session.page.action(&now, json!({"kind":"ready","ref":reference})).await?;
+            if !review_page { session.page.action(&now, json!({"kind":"ready","ref":reference})).await?; }
             let result = ledger.call(json!({"operation":"ready","attempt_id":attempt})).await?;
             session.terminal = true;
             return Ok(session.view(result, None));

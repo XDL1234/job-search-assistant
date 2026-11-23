@@ -26,8 +26,15 @@ fn main() {
         if request.get("id").is_none() {
             continue;
         }
+        if method == "turn/start" {
+            let input = request["params"]["input"].as_array().expect("桌面回合缺少输入");
+            assert!(!input.is_empty() && input.iter().all(|item| item["type"] == "text"),
+                "桌面回合应直接发送文本任务");
+        }
         let result = match method {
             "account/read" => json!({"account":{"type":"chatgpt"}}),
+            "model/list" => json!({"data":[{"model":"offline-test-model","hidden":false,"isDefault":true,
+                "inputModalities":["text","image"]}],"nextCursor":null}),
             "thread/start" | "thread/resume" => json!({"thread":{"id":"offline-test-thread"}}),
             "turn/start" => json!({"turn":{"id":"offline-test-turn","status":"inProgress"}}),
             _ => json!({}),

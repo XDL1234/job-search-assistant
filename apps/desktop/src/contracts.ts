@@ -1,6 +1,9 @@
 export type UiMethod =
   | "health"
   | "snapshot"
+  | "list_records"
+  | "record_detail"
+  | "record_days"
   | "export_records"
   | "read_image"
   | "start_run"
@@ -78,6 +81,7 @@ export interface Run {
   created: string;
   started_at?: string | null;
   updated_at?: string | null;
+  confirmed_counts?: { greet: number; submit: number };
   config: {
     target_roles: string[];
     channels: string[];
@@ -126,13 +130,39 @@ export interface JobReview {
   facts?: string[];
   reason: string;
 }
+export type AttentionCategory = "interview" | "review" | "other";
+export type CompanyQueueState = "pending_open" | "opened" | "login_required" | "locate" | "available" | "filling" |
+  "manual_required" | "ready_for_review" | "submitted" | "manual_submitted" | "uncertain" | "no_match" | "skipped";
+export interface CompanyQueueRow {
+  source_row: number;
+  company: string;
+  job: string;
+  url: string;
+  destination_job?: string;
+  attempt_id?: string | null;
+  state: CompanyQueueState;
+  reason: string;
+  tab_available: boolean;
+}
+export interface CompanyQueue {
+  phase: "prepare" | "waiting_login" | "checking" | "filling" | "waiting_review" | "completed";
+  rows: CompanyQueueRow[];
+  reason: string;
+}
 export interface Snapshot {
+  company_queue?: CompanyQueue | null;
+  active_run_count?: number;
+  active_real_count?: number;
+  pending_count?: number;
+  weekly_greet_count?: number;
+  attention_category_counts?: Record<AttentionCategory, number>;
   runs: Run[];
   attempts: Attempt[];
   attention: {
     id: string;
     subject: string;
     reason: string;
+    category?: AttentionCategory;
     resolved: number;
     created?: string;
     job_review?: JobReview;

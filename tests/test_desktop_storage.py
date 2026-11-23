@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/worker/scripts'))
 from job_assistant.ai_selection import digest
 from job_assistant.app_runs import preview_demo, preview_run, start_run
 from job_assistant.cli import main, verify_materials

@@ -17,7 +17,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/worker/scripts'))
 from job_assistant.agent_browser import Browser, BrowserOriginError, PAGE_SCRIPT, _boss_url, compact_observation, facts_hash, inspect_page, read_config
 
 

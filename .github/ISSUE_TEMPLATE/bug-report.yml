@@ -1,0 +1,25 @@
+name: 报告问题
+description: 报告桌面应用的异常或功能故障
+title: "[问题] "
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: 应用版本和 Windows 版本
+      placeholder: 求职助手 1.1.0，Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 写明从哪个页面开始，以及依次执行了哪些操作。
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 实际结果和预期结果
+      description: 只分享已遮盖个人信息、账号、简历和验证码的截图或日志。
+    validations:
+      required: true

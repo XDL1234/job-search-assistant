@@ -1,4 +1,4 @@
-import type { Run, Snapshot } from "./contracts";
+import type { Run } from "./contracts";
 
 export const isActiveRun = (run: Run) => run.status === "running" || run.status === "watching";
 
@@ -14,11 +14,6 @@ export function runStatus(run: Run) {
     running: "运行中", watching: "回复值守", paused: "已暂停", stopped: "已停止", completed: "已完成",
   };
   return run.status === "paused" && !run.started_at ? "待启动" : labels[run.status] ?? run.status;
-}
-
-export function confirmedActions(snapshot: Snapshot, kind: string, runId?: string) {
-  return (snapshot.actions ?? []).filter((action) => action.kind === kind && action.status === "succeeded" &&
-    (runId === undefined || action.run_id === runId));
 }
 
 export function beginningOfWeek(now: Date) {

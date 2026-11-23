@@ -4,13 +4,14 @@ import { Button } from "../components/ui/button";
 import type { Run, Snapshot } from "../contracts";
 import { Preview } from "../Preview";
 import { Usage } from "../Usage";
-import { confirmedActions, displayTime, isActiveRun, runName, runStatus } from "../workspace";
+import { displayTime, isActiveRun, runName, runStatus } from "../workspace";
+import { companyBatchView, CompanyQueueList, type CompanyRowAction } from "./CompanyQueue";
 
 export interface ExecutionLine { runId: string; text: string; at: string; key: number }
 const timeText = (value: string) => new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
 
 export function Workbench({ run, snapshot, messages, busy, starting, codexReady, browserReady, frame, previewKey, problem, onBack,
-  onControl, onBrowserSetup, onEdit, onWatch, onImage }: {
+  onControl, onBrowserSetup, onCompanyRow, onProfile, onConnectCodex, onEdit, onWatch, onImage }: {
   run?: Run;
   snapshot: Snapshot;
   messages: ExecutionLine[];
@@ -22,13 +23,16 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
   previewKey: string;
   problem?: string;
   onBack: () => void;
-  onControl: (action: "running" | "paused" | "stopped") => void;
+  onControl: (action: "running" | "paused" | "stopped" | "prepare_company") => void;
   onBrowserSetup: () => void;
+  onCompanyRow?: (action: CompanyRowAction, sourceRow: number) => void;
+  onProfile?: () => void;
+  onConnectCodex?: () => void;
   onEdit?: () => void;
   onWatch?: () => void;
   onImage: (kind: "frame" | "evidence", id: string) => void;
 }) {
-  const [tab, setTab] = useState<"progress" | "queue" | "usage">("progress");
+  const [selectedTab, setTab] = useState<"progress" | "queue" | "usage">();
   const [screen, setScreen] = useState<"live" | "saved">("live");
   const [expanded, setExpanded] = useState(false);
   const expandButton = useRef<HTMLButtonElement>(null);
@@ -48,23 +52,30 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
 
   const boss = run.config.channels.includes("boss");
   const company = !run.config.simulation && !boss && run.config.channels.includes("web");
-  const livePreviewKey = company && active ? run.id : previewKey;
+  const queue = company ? snapshot.company_queue : undefined;
+  const batch = queue ? companyBatchView(queue, run.config.target_roles) : undefined;
+  const tab = selectedTab ?? (batch ? "queue" : "progress");
+  const livePreviewKey = batch ? active && batch.fillingRow ? `${run.id}:${batch.fillingRow.source_row}` : ""
+    : company && active ? run.id : previewKey;
   const script = run.config.execution_mode === "script";
   const stoppedBoss = boss && run.status === "stopped" && !run.config.simulation;
   const completed = run.status === "stopped" || run.status === "completed";
   const scope = new Set(snapshot.run_attempts?.filter((row) => row.run_id === run.id).map((row) => row.attempt_id));
   const attempts = snapshot.attempts.filter((row) => row.run_id === run.id || scope.has(row.id));
-  const waitingForSubmission = company && !active && run.status === "paused" && run.config.web_submit !== true &&
-    attempts.some((row) => row.run_id === run.id && row.status === "needs_user" && row.reason === "已填写，等待你在当前网页确认并提交。");
-  const status = waitingForSubmission ? "待你提交" : runStatus(run);
-  const result = confirmedActions(snapshot, boss ? "greet" : "submit", run.id).length;
   const activity = snapshot.activity?.find((row) => row.run_id === run.id);
-  const start = activity?.fresh_after ? activity.fresh_after * 1000 : new Date(run.started_at ?? "").getTime();
+  const start = activity?.fresh_after ? Math.floor(activity.fresh_after * 1000) : Date.parse(run.started_at ?? "");
+  const sessionError = problem || snapshot.sessions?.find((item) => item.run_id === run.id)?.error;
+  const waitingForSubmission = company && !batch && !active && !sessionError && run.status === "paused" && run.config.web_submit !== true &&
+    attempts.some((row) => row.run_id === run.id && row.status === "needs_user" && row.reason === "已填写，等待你在当前网页确认并提交。" &&
+      (!Number.isFinite(start) || Date.parse(row.updated) >= start) &&
+      !snapshot.attention.some((item) => item.subject === row.id && item.reason === row.reason && item.resolved));
+  const status = run.status === "stopped" || (!active && (queue?.phase === "filling" || queue?.phase === "checking")) ? runStatus(run)
+    : batch ? batch.status : waitingForSubmission ? "待你提交" : runStatus(run);
+  const result = run.confirmed_counts?.[boss ? "greet" : "submit"] ?? 0;
   const elapsed = Math.max(0, Math.floor((now - start) / 1000));
   const elapsedLabel = Number.isFinite(elapsed) ? [Math.floor(elapsed / 3600), Math.floor(elapsed % 3600 / 60), elapsed % 60]
     .map((piece) => String(piece).padStart(2, "0")).join(":") : "";
   const eventRows = messages.filter((item) => item.runId === run.id && item.text.trim());
-  const sessionError = problem || snapshot.sessions?.find((item) => item.run_id === run.id)?.error;
   const savedFrame = snapshot.frame?.run_id === run.id ? snapshot.frame : undefined;
   const showSaved = !company || Boolean(savedFrame);
   const live = screen === "live" || !showSaved;
@@ -75,10 +86,18 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
         <div className="workbench-meta"><span>{boss ? "BOSS 直聘" : "公司网申"}</span>
           <span className={`badge ${run.status}`}>{starting ? "正在启动" : status}</span>
           <span>{boss ? `已沟通 ${result}${run.config.max_contacts ? ` / ${run.config.max_contacts}` : ""}`
-            : company ? (run.config.web_submit === true ? `已自动提交 ${result}` : "仅填写") : `已提交 ${result}`}</span></div></div>
+            : batch ? (run.config.web_submit === true ? "填写并自动提交" : "仅填写，我来提交")
+            : company ? (run.config.web_submit === true ? `已自动提交 ${result}` : "仅填写") : `已提交 ${result}`}</span>
+          {batch && <><span>可填写 {batch.available}</span><span>待登录 {batch.login}</span><span>已填写待核对 {batch.review}</span></>}
+        </div></div>
       <div className="workbench-actions">
         {active ? <Button disabled={busy} onClick={() => onControl("paused")}><Pause size={17} /> 暂停接管</Button>
-          : <Button disabled={busy || completed || (!script && !codexReady)} onClick={() => onControl("running")}><Play size={17} /> 开始 / 恢复</Button>}
+          : batch ? <>
+            {batch.canContinue && run.status !== "stopped" && <Button disabled={busy}
+              onClick={() => onControl(batch.prepare ? "prepare_company" : "running")}><Play size={17} />{batch.primary}</Button>}
+            {batch.canContinue && !batch.prepare && !codexReady && run.status !== "stopped" && onConnectCodex &&
+              <Button variant="secondary" disabled={busy} onClick={onConnectCodex}>连接 Codex</Button>}
+          </> : <Button disabled={busy || completed || (!script && !codexReady)} onClick={() => onControl("running")}><Play size={17} /> 开始 / 恢复</Button>}
         {onEdit && !active && (completed || run.status === "paused") &&
           <Button variant="secondary" disabled={busy} onClick={onEdit}><Pencil size={16} /> 编辑任务</Button>}
         {onWatch && boss && script && !active && (run.status === "paused" || run.status === "completed") &&
@@ -87,6 +106,7 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
       </div>
     </header>
     {sessionError && <div className="banner error" role="alert">{sessionError}</div>}
+    {queue?.reason && queue.reason !== sessionError && <div className="banner" role="status">{queue.reason}</div>}
     <div className="workbench-grid">
       <section className="card workbench-card">
         <div className="workspace-tabs" aria-label="任务详情">
@@ -106,7 +126,12 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
                   : <p className="muted">任务开始后，执行记录会显示在这里。</p>}
             </div>
           </>}
-          {tab === "queue" && (attempts.length ? <div className="workbench-queue">{attempts.map((row) => <div key={row.id}>
+          {tab === "queue" && (batch ? <>
+            <CompanyQueueList rows={batch.rows} busy={busy} canReopen={!active && run.status !== "stopped"} onAction={onCompanyRow} onProfile={onProfile} />
+            <div className="workbench-meta company-queue-results" aria-label="本轮提交结果">
+              <span>用户标记已提交 {batch.manual}</span><span>已核验提交 {batch.verified}</span><span>提交待核查 {batch.uncertain}</span>
+            </div>
+          </> : attempts.length ? <div className="workbench-queue">{attempts.map((row) => <div key={row.id}>
             <strong>{row.company}</strong><span>{row.job}</span><small>{displayTime(row.updated)}</small>
             <p>{row.reason || ({ success: "已完成", failed: "失败", in_progress: "处理中", uncertain: "待核查" } as Record<string, string>)[row.status] || "已记录"}</p>
           </div>)}</div> : <p className="muted">当前暂无已记录的岗位或公司。</p>)}
@@ -129,6 +154,7 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
           (event.shiftKey ? last : first)?.focus();
         }}>
         <div className="workbench-screen-title"><h2>浏览器画面</h2>{browserReady && boss && !run.config.simulation && <span className="badge success">已绑定 Chrome</span>}
+          {live && livePreviewKey && batch?.fillingRow && <span>{batch.fillingRow.company} · {batch.fillingRow.job}</span>}
           {expanded && <button autoFocus aria-label="关闭放大预览" onClick={closePreview}><X size={20} /></button>}
           {live && livePreviewKey && !expanded && <Button ref={expandButton} variant="secondary" onClick={() => setExpanded(true)}><ExternalLink size={15} /> 放大预览</Button>}
         </div>
@@ -139,6 +165,9 @@ export function Workbench({ run, snapshot, messages, busy, starting, codexReady,
         <div className="workbench-body">
           {live ? livePreviewKey ? <Preview key={livePreviewKey} runId={company ? run.id : undefined} /> : <div className="workbench-placeholder">
             <Monitor size={30} /><strong>{run.config.simulation ? "本地模拟" : stoppedBoss ? "任务已停止"
+              : batch ? queue?.phase === "waiting_login" && run.status !== "stopped" ? "请在 Chrome 中完成登录或验证"
+                : queue?.phase === "checking" && active ? "正在检查本批网页"
+                : batch.finishedFilling ? "请从队列打开已填写的网页核对" : status
               : waitingForSubmission ? "请在当前网页核对并提交"
               : company ? (completed || run.started_at ? status : "任务启动后显示公司网页")
               : "等待 Chrome 连接"}</strong>

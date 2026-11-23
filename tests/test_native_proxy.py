@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'
+SCRIPTS = Path(__file__).resolve().parents[1] / 'apps/worker/scripts'
 sys.path.insert(0, str(SCRIPTS))
 from job_assistant.native_proxy import _proxy_additions, codex_proxy_environment
 from job_assistant.app_service import handle_app_request

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'apps/worker/scripts'))
 from job_assistant.agent_browser import check_current_source
 from job_assistant.app_runs import preview_run, start_run
 from job_assistant.boss_filter_scope import check_list_scope, list_scope, prepare_run_filters, read_scope

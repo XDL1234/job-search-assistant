@@ -10,10 +10,11 @@
 
 本节仅说明源码开发启动。普通使用者直接下载安装包，无需以下开发环境。开发前置环境为 Node、Python 3.11+、Rust/MSVC、WebView2，以及已登录的 Codex CLI。依赖版本由 npm/Cargo 锁文件固定；本版动态工具协议仅验证 `codex-cli 0.156.1`。
 
-首次准备前端依赖：
+首次准备前端和 Python 工作进程依赖。
 
 ```powershell
 npm.cmd --prefix "./apps/desktop" ci
+python -X utf8 "./apps/worker/scripts/run.py" --root "./.verification/desktop-app" bootstrap --install
 ```
 
 在仓库根目录启动：
@@ -28,9 +29,9 @@ python -X utf8 "./tools/desktop_dev.py" dev
 
 本机经用户确认安装的 Rust 位于 `D:/Development/Rust`，MSVC 位于 `D:/Development/BuildTools`；启动器仅对子进程设置 Rust 路径，不改全局 PATH。Microsoft 安装器、共享 Windows SDK 和系统注册组件可能仍使用系统目录，不能宣称系统盘零写入。
 
-开发数据默认在仓库 `.verification/desktop-app/data`，与现有 Skill 数据隔离。已有 Skill 私有 Python 环境可复用；缺少依赖时先按 Skill 安装说明初始化。可通过 `JOB_ASSISTANT_DATA_DIR`、`JOB_ASSISTANT_PYTHON`、`JOB_ASSISTANT_CODEX` 指定已有位置，不把账户凭据写入项目配置。
+开发数据默认保存在仓库的 `.verification/desktop-app/data`。启动器优先复用打包环境中的 Python，其次使用开发工作进程的独立环境。可用 `JOB_ASSISTANT_DATA_DIR`、`JOB_ASSISTANT_PYTHON`、`JOB_ASSISTANT_CODEX` 覆盖本机路径。
 
-## 已实现的流程
+## 早期开发记录
 
 - 首页、八页导航、执行工作台、只读消息中心、历史与证据、Codex 连接设置。
 - 原生界面测试在独立数据目录准备暂停状态的模拟任务。桌面设置已移除创建本地演示的入口。

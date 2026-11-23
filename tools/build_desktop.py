@@ -1,4 +1,4 @@
-"""构建 Windows MSI 和 EXE 安装包，只复制 Skill 白名单和官方依赖发行文件。"""
+"""构建 Windows MSI 和 EXE 安装包，按白名单复制工作进程和官方依赖。"""
 import argparse
 import hashlib
 import importlib.metadata
@@ -28,17 +28,18 @@ def resource_manifest(directory):
     for path in sorted(directory.rglob('*')):
         if path.is_symlink():
             raise ValueError('发行资源不得包含链接')
-        if not path.is_file() or path.name == 'resource-manifest.json':
+        if not path.is_file() or path == directory/'resource-manifest.json':
             continue
         relative = path.relative_to(directory)
         if (relative.parts[0] not in {'worker', 'codex', 'licenses', 'agent-browser', 'THIRD-PARTY-NOTICES.txt'}
                 or path.name.lower() in {'auth.json', 'config.toml', 'records.sqlite3', 'profile.json', 'resume.pdf',
                                          'resume.docx', 'agent-browser.json', 'browser-bridge.json', 'security-smoke.json'}
-                or any(p in {'.git', '.codex', '.verification', 'frames', 'evidence', 'sessions'} for p in relative.parts)
+                or any(p.casefold() in {'.git', '.codex', '.verification', 'frames', 'evidence', 'sessions'} for p in relative.parts)
+                or path.suffix.lower().startswith(('.db-', '.sqlite-', '.sqlite3-'))
                 or path.suffix.lower() in {'.sqlite3', '.sqlite', '.db', '.log', '.png', '.jpg', '.jpeg', '.webp', '.mp4', '.webm'}):
             raise ValueError('发行目录出现用户数据或运行记录：' + relative.as_posix())
         files.append({'path': relative.as_posix(), 'size': path.stat().st_size,
-                      'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+                      'sha256': file_hash(path)})
     return files
 
 
@@ -75,44 +76,45 @@ for d in m.distributions():
 
 
 def build_worker(env):
-    sys.path.insert(0, str(ROOT/'skills/job-search-assistant/scripts'))
+    source = ROOT/'apps/worker'
+    sys.path.insert(0, str(source/'scripts'))
     from job_assistant.bootstrap import source_files, tree_hash
     python = BUILD/'python/Scripts/python.exe'
     if not python.exists():
         venv.EnvBuilder(with_pip=True).create(python.parents[1])
-    manifest = json.loads((ROOT/'skills/job-search-assistant/dependencies.json').read_text())
+    manifest = json.loads((source/'dependencies.json').read_text())
     requirements = [f"{p['name']}=={p['version']}" for p in manifest['packages']]
     run([python, '-m', 'pip', '--isolated', 'install', '--disable-pip-version-check', '--index-url', 'https://pypi.org/simple',
          f'PyInstaller=={PYINSTALLER_VERSION}', *requirements, *OCR_REQUIREMENTS], env=env)
     run([python, '-m', 'pip', 'check'], env=env)
     stage = BUILD/('stage-' + uuid.uuid4().hex[:8])
-    skill = stage/'skill'
-    source = ROOT/'skills/job-search-assistant'
+    worker_data = stage/'worker-data'
     source_hash = tree_hash(source)
     for path in source_files(source):
-        target = skill/path.relative_to(source)
+        target = worker_data/path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    collect_python_notices(python, skill/'third-party-licenses', env)
+    collect_python_notices(python, worker_data/'third-party-licenses', env)
     env = {**env, 'PYINSTALLER_CONFIG_DIR': str(BUILD/'pyinstaller-cache')}
     run([python, '-m', 'PyInstaller', '--noconfirm', '--onedir', '--name', 'worker',
          '--distpath', RESOURCES, '--workpath', stage/'work', '--specpath', stage,
-         '--paths', skill/'scripts', '--add-data', f'{skill};skill',
+         '--paths', worker_data/'scripts', '--add-data', f'{worker_data};worker-data',
          '--collect-all', 'pyautogui', '--collect-all', 'openpyxl',
          '--collect-data', 'rapidocr', '--hidden-import', 'onnxruntime', '--collect-binaries', 'onnxruntime',
-         '--collect-data', 'pypdfium2_raw', '--collect-binaries', 'pypdfium2_raw', skill/'scripts/run.py'], env=env, cwd=ROOT)
+         '--collect-data', 'pypdfium2_raw', '--collect-binaries', 'pypdfium2_raw', worker_data/'scripts/run.py'], env=env, cwd=ROOT)
     if tree_hash(source) != source_hash:
-        raise ValueError('构建期间 Skill 源码发生变化，请稳定源码后重新构建')
+        raise ValueError('构建期间工作进程源码发生变化，请重新构建')
     worker = RESOURCES/'worker/worker.exe'
     (RESOURCES/'worker/build-manifest.json').write_text(json.dumps({
-        'skill_sha256': source_hash, 'worker_sha256': file_hash(worker),
+        'source_sha256': source_hash, 'worker_sha256': file_hash(worker),
         'pyinstaller': PYINSTALLER_VERSION,
     }, indent=2), encoding='utf-8')
     return RESOURCES/'worker/worker.exe'
 
 
 def file_hash(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    with Path(path).open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def verify_agent_browser(directory, published=False):
@@ -171,14 +173,14 @@ def verify_reused_resources():
     manifest = json.loads(previous.read_text(encoding='utf-8'))
     if manifest.get('codex') != CODEX_VERSION or manifest.get('files') != resource_manifest(RESOURCES):
         raise ValueError('现有资源内容与校验清单不符，不能复用')
-    sys.path.insert(0, str(ROOT/'skills/job-search-assistant/scripts'))
+    sys.path.insert(0, str(ROOT/'apps/worker/scripts'))
     from job_assistant.bootstrap import tree_hash
     worker = RESOURCES/'worker/worker.exe'
     metadata = json.loads((RESOURCES/'worker/build-manifest.json').read_text(encoding='utf-8'))
-    if (metadata.get('skill_sha256') != tree_hash(ROOT/'skills/job-search-assistant')
+    if (metadata.get('source_sha256') != tree_hash(ROOT/'apps/worker')
             or metadata.get('worker_sha256') != file_hash(worker)
             or metadata.get('pyinstaller') != PYINSTALLER_VERSION):
-        raise ValueError('内置 worker 与当前 Skill 源码不符，不能复用')
+        raise ValueError('内置 worker 与当前工作进程源码不符，不能复用')
     version = subprocess.check_output([str(RESOURCES/'codex/bin/codex.exe'), '--version'],
                                       text=True, encoding='utf-8', timeout=10).strip()
     if version != 'codex-cli ' + CODEX_VERSION:
@@ -274,7 +276,7 @@ def main():
         runtime = copy_agent_browser(agent_source)
         (RESOURCES/'THIRD-PARTY-NOTICES.txt').write_text(
             '求职助手包含：Python（PSF）、PyInstaller bootloader（GPL exception）、'
-            'PyAutoGUI/Pillow/openpyxl 等依赖（许可证见 runtime/worker/_internal/skill/third-party-licenses）；'
+            'PyAutoGUI/Pillow/openpyxl 等依赖（许可证见 runtime/worker/_internal/worker-data/third-party-licenses）；'
             'Codex CLI 0.156.1（Apache-2.0，见 runtime/codex/LICENSE-APACHE-2.0.txt）。'
             'agent-browser 0.43.0 与本项目嵌入补丁（Apache-2.0，见 runtime/agent-browser 的 LICENSE 与 NOTICE）。'
             'Codex 附带组件的 notices/licenses 按官方发行目录保留。\n'

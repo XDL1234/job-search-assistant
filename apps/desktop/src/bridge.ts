@@ -1,8 +1,14 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { UiMethod, WorkerResponse } from "./contracts";
 
+export class WorkerRequestError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
+
 export function unwrap<T>(response: WorkerResponse<T>): T {
-  if (!response.ok) throw new Error(response.error?.message || "操作失败");
+  if (!response.ok) throw new WorkerRequestError(response.error?.code || "unknown", response.error?.message || "操作失败");
   if (response.result === undefined) throw new Error("执行器返回不完整结果");
   return response.result;
 }

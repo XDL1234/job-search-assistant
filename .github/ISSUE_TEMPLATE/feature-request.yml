@@ -1,0 +1,18 @@
+name: 建议功能
+description: 描述希望改善的求职操作
+title: "[建议] "
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: 使用场景
+      description: 你正在使用哪个功能？当前哪一步最费时或容易出错？
+    validations:
+      required: true
+  - type: textarea
+    id: expectation
+    attributes:
+      label: 期望的操作流程
+      description: 描述从打开功能到完成操作时，你希望看到的结果。
+    validations:
+      required: true

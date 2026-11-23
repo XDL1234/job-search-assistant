@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/worker/scripts'))
 from job_assistant.store import Store
 
 
@@ -76,6 +76,30 @@ class AppServiceTests(unittest.TestCase):
     def test_image_requires_record_identity(self):
         result = self.call('read_image', kind='frame', identity='../profile')
         self.assertFalse(result['ok'])
+
+    def test_export_preserves_source_company_workbooks(self):
+        from job_assistant.migrations import migrate_app
+        from openpyxl import Workbook
+        paths = [self.store.root / (name + '.xlsx') for name in ('本轮公司表', '上轮公司表', '预览公司表')]
+        book = Workbook()
+        book.active.append(['公司名称', '申请网站'])
+        for path in paths:
+            book.save(path)
+        book.close()
+        run = self.store.create_run({'channels': ['web'], 'company_table': str(paths[0])}, '确认')
+        migrate_app(self.store)
+        with self.store.conn:
+            approval = {'revisions': [{'previous_config': {'company_table': str(paths[1])}}]}
+            self.store.conn.execute('UPDATE runs SET approval=? WHERE id=?', (json.dumps(approval), run))
+            preview = {'config': {'company_table': str(paths[2])}, 'revision': {'run_id': run}}
+            self.store.conn.execute('INSERT INTO app_previews VALUES (?,?,?)', ('test', json.dumps(preview), 9999999999))
+        for path in paths:
+            with self.subTest(path=path):
+                original = path.read_bytes()
+                result = self.call('export_records_to', destination=str(path))
+                self.assertFalse(result['ok'])
+                self.assertIn('公司表', result['error']['message'])
+                self.assertEqual(original, path.read_bytes())
 
     def test_health_has_no_credentials(self):
         result = self.call('health')

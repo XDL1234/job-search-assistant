@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/job-search-assistant/scripts'
+SCRIPTS = Path(__file__).resolve().parents[1] / 'apps/worker/scripts'
 sys.path.insert(0, str(SCRIPTS))
 
 
@@ -87,6 +87,25 @@ class CoreTests(unittest.TestCase):
         self.db.finish_action(action, 'succeeded', evidence, '出现首次沟通消息')
         with self.assertRaises(ValueError):
             self.db.set_attempt(a, 'failed', '想重新投递')
+        self.db.observe_message('hr', 'm1', '你好')
+        reply = self.db.prepare_action(run, a, 'reply', 'hr', {'text': '您好', 'message_key': 'm1'})
+        self.db.claim_action(run, reply)
+        self.db.finish_action(reply, 'uncertain', reason='后续消息缺少回执')
+        self.assertEqual(self.db.one('actions', reply)['status'], 'uncertain')
+        self.assertEqual(self.db.one('attempts', a)['status'], 'success')
+        self.assertEqual(self.db.one('attempts', a)['reason'], '出现首次沟通消息')
+
+    def test_manual_reply_authorization_and_action_roll_back_together(self):
+        import sqlite3
+        run = self.db.create_run({'channels': ['boss'], 'max_contacts': 1}, '确认')
+        attempt = self.db.begin_attempt(run, '甲', 'https://example.com', '工程师', 'boss', '1')
+        self.db.observe_message('hr', 'm1', '有空吗')
+        self.db.handoff('hr', '人工接管')
+        self.db.conn.execute("""CREATE TEMP TRIGGER fail_manual BEFORE INSERT ON manual_sends
+                                BEGIN SELECT RAISE(ABORT, '写入中断'); END""")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.prepare_manual_reply(run, attempt, 'hr', 'm1', '有空', True)
+        self.assertEqual(self.db.conn.execute('SELECT count(*) FROM actions').fetchone()[0], 0)
 
     def test_pre_submit_image_cannot_prove_success(self):
         from PIL import Image
@@ -98,6 +117,29 @@ class CoreTests(unittest.TestCase):
         evidence = self.db.evidence(a, pic, 'pre_submit')
         with self.assertRaises(ValueError):
             self.db.finish_action(action, 'succeeded', evidence, '没有实际回执')
+
+    def test_stale_verification_cannot_overwrite_new_receipt(self):
+        from contextlib import closing
+        from unittest.mock import patch
+        from PIL import Image
+        from job_assistant.store import Store
+        run = self.db.create_run({'channels': ['boss'], 'max_contacts': 1}, '确认')
+        attempt = self.db.begin_attempt(run, '甲', 'https://example.com', '工程师', 'boss', '1')
+        action = self.db.prepare_action(run, attempt, 'greet', 'hr', {})
+        self.db.claim_action(run, action)
+        picture = self.root / 'screen.png'
+        Image.new('RGB', (2, 2)).save(picture)
+        evidence = self.db.evidence(attempt, picture, 'verification')
+        with closing(Store(self.root)) as other:
+            def concurrent_receipt(evidence_id, attempt_id):
+                proof = other.check_evidence(evidence_id, attempt_id)
+                other.finish_action(action, 'succeeded', evidence_id, '收到沟通回执')
+                return proof
+            with patch.object(self.db, 'check_evidence', side_effect=concurrent_receipt):
+                with self.assertRaisesRegex(ValueError, '状态已变化'):
+                    self.db.finish_action(action, 'not_done', evidence, '旧核查结果')
+        self.assertEqual(self.db.one('actions', action)['status'], 'succeeded')
+        self.assertEqual(self.db.one('attempts', attempt)['status'], 'success')
 
     def test_attention_can_be_notified_once_after_handoff(self):
         item = self.db.handoff('hr', 'interview')
@@ -120,6 +162,8 @@ class CoreTests(unittest.TestCase):
             page = book['网申记录']
             index = [c.value for c in page[1]].index('company') + 1
             self.assertEqual(page.cell(2, index).data_type, 's')
+            self.assertIsNone(page['L2'].hyperlink)
+            self.assertIsNone(page['L2'].value)
         finally:
             book.close()
 
@@ -140,6 +184,21 @@ class CoreTests(unittest.TestCase):
         b = self.db.begin_attempt(run, '乙', 'https://www.zhipin.com/2', '嵌入式', 'boss', '2')
         with self.assertRaisesRegex(ValueError, '上限'):
             self.db.prepare_action(run, b, 'greet', 'hr2', {})
+
+    def test_recruiter_name_change_does_not_allow_greeting_same_job_again(self):
+        run = self.db.create_run({'channels': ['boss'], 'max_contacts': 5}, '确认')
+        attempt = self.db.begin_attempt(run, '甲', 'https://example.com', '工程师', 'boss', '1')
+        first = self.db.prepare_action(run, attempt, 'greet', '张老师', {})
+        with self.assertRaisesRegex(ValueError, '重复|核实'):
+            self.db.prepare_action(run, attempt, 'greet', '张女士', {})
+        # 旧版本可能已为同一岗位留下两条待执行动作。先取得执行权的一条才可继续。
+        with self.db.conn:
+            self.db.conn.execute("""INSERT INTO actions
+                SELECT 'legacy',run_id,attempt_id,kind,'张女士',payload,'legacy-key',status,evidence_id,reason,created,updated
+                FROM actions WHERE id=?""", (first,))
+        self.db.claim_action(run, first)
+        with self.assertRaisesRegex(ValueError, '重复|核实'):
+            self.db.claim_action(run, 'legacy')
 
     def test_exact_message_is_not_sent_twice_and_handoff_blocks_reply(self):
         run = self.db.create_run({'channels': ['boss'], 'max_contacts': 2}, '用户确认本轮')

@@ -144,11 +144,26 @@ async fn executor_control(
     run_id: String,
     action: String,
 ) -> Result<(), String> {
-    if matches!(action.as_str(), "running" | "watching") {
-        state.inner().start(app, run_id, action == "watching").await
+    if matches!(action.as_str(), "running" | "watching" | "prepare_company") {
+        state.inner().start(app, run_id, &action).await
     } else {
         state.control(&app, &run_id, &action).await
     }
+}
+
+#[tauri::command]
+async fn company_focus_tab(state: State<'_, Arc<ExecutorCoordinator>>, run_id: String, source_row: i64) -> Result<(), String> {
+    state.company_focus_tab(&run_id, source_row).await
+}
+
+#[tauri::command]
+async fn company_mark_submitted(state: State<'_, Arc<ExecutorCoordinator>>, run_id: String, source_row: i64) -> Result<Value, String> {
+    state.worker.call("company_mark_submitted", serde_json::json!({"run_id":run_id,"source_row":source_row})).await
+}
+
+#[tauri::command]
+async fn company_reopen_review(state: State<'_, Arc<ExecutorCoordinator>>, run_id: String, source_row: i64) -> Result<Value, String> {
+    state.worker.call("company_reopen_review", serde_json::json!({"run_id":run_id,"source_row":source_row})).await
 }
 
 pub fn run() {
@@ -195,6 +210,9 @@ pub fn run() {
             codex_login,
             codex_cancel_login,
             executor_control,
+            company_focus_tab,
+            company_mark_submitted,
+            company_reopen_review,
             executor_confirm_revision,
             dialog::pick_file,
             browser_connect,
